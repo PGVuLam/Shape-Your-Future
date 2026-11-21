@@ -36,7 +36,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { toCanvas, toPng } from 'html-to-image';
-import { UserProfile, Career, LLMConfig, LLMProviderType } from '../types';
+import { UserProfile, Career, LLMConfig, LLMProviderType, normalizeLLMProvider } from '../types';
 import { CAREER_DATABASE } from '../data/careers';
 import { generateRecommendations } from '../engine/recommendationEngine';
 import { VIETNAM_UNIVERSITIES, UniversityInfo } from '../data/vietnamUniversities';
@@ -226,7 +226,7 @@ Bạn cần tư vấn về chiến lược đăng ký trường đại học, ph
       const errorMsg: ChatMessage = {
         id: `bot-err-${Date.now()}`,
         sender: 'assistant',
-        content: 'Hệ thống đang bận xử lý, vui lòng thử lại sau giây lát hoặc chuyển sang chế độ Local LLM.',
+        content: 'Hệ thống đang bận xử lý, vui lòng thử lại sau giây lát hoặc chuyển sang Engine Quy tắc Nội bộ (Offline) / Local LLM (Ollama).',
         timestamp: Date.now()
       };
       setChatMessages(prev => [...prev, errorMsg]);
@@ -537,7 +537,7 @@ Bạn cần tư vấn về chiến lược đăng ký trường đại học, ph
               {!profile.examScores?.hsaScore && !profile.examScores?.tsaScore && 'Kỳ thi tốt nghiệp THPT'}
             </div>
             <div className="text-amber-900 font-medium truncate">
-              {profile.examScores?.thptScore ? `${profile.examScores.thptCombo || 'THPTQG'}: ${profile.examScores.thptScore}đ` : 'Chưa nhập điểm THPT'}
+              {profile.examScores?.thptScore ? `${profile.examScores.thptAdmissionCombo || profile.examScores.thptCombo || 'THPTQG'}: ${profile.examScores.thptScore}đ` : 'Chưa nhập điểm THPT'}
             </div>
             <div className="text-amber-800 text-[11px] truncate" title={profile.examScores?.awards?.join(', ') || 'Chứng chỉ ngoại ngữ / KHKT'}>
               {profile.examScores?.awards?.join(', ') || 'Chứng chỉ ngoại ngữ / KHKT'}
@@ -1084,25 +1084,25 @@ Bạn cần tư vấn về chiến lược đăng ký trường đại học, ph
           <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-slate-100/90 border border-slate-200 text-xs">
             <span className="text-[11px] font-semibold text-slate-500 pl-2">Mô hình AI:</span>
             <select
-              value={llmConfig.provider}
+              value={normalizeLLMProvider(llmConfig.provider)}
               onChange={e => {
                 const prov = e.target.value as LLMProviderType;
                 setLlmConfig({
                   ...llmConfig,
                   provider: prov,
                   modelName:
-                    prov === 'local'
-                      ? 'Local LLM (Mô hình Cục bộ Offline)'
+                    prov === 'offline-engine'
+                      ? 'EduPath Deterministic Engine (Offline)'
                       : prov === 'gemini'
-                      ? 'Gemini 3.8 Flash (Cloud AI Studio)'
-                      : 'Ollama / DeepSeek / Custom'
+                      ? 'gemini-3.8-flash'
+                      : 'qwen2.5:7b'
                 });
               }}
               className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-900 font-bold text-xs shadow-xs focus:outline-none"
             >
-              <option value="gemini">✨ Gemini 3.8 Flash (Mặc định)</option>
-              <option value="local">🟢 Local LLM (Cục bộ / Offline)</option>
-              <option value="custom">🟣 Custom / Ollama Endpoint</option>
+              <option value="gemini">✨ Google Gemini Cloud (gemini-3.8-flash)</option>
+              <option value="ollama">🟢 Local LLM trên Máy (Ollama / LM Studio)</option>
+              <option value="offline-engine">🟣 Engine Quy tắc Nội bộ (Offline — Không LLM)</option>
             </select>
 
             <button

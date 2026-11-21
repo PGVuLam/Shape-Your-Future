@@ -96,11 +96,20 @@ export function buildCounselorContext(
       roadmapSummary = {
         stageLabel: roadmap.stageLabel,
         allocationSummary: roadmap.allocation
-          ? `${roadmap.allocation.examRatio}% ôn thi / ${roadmap.allocation.skillRatio}% kỹ năng (${roadmap.allocation.rationale})`
+          ? `${roadmap.allocation.examRatio}% ôn thi (${roadmap.allocation.examHoursPerWeek ?? '?'}h) / ${roadmap.allocation.skillRatio}% kỹ năng (${roadmap.allocation.skillHoursPerWeek ?? '?'}h) — ${roadmap.allocation.rationale}`
           : undefined,
         plannedExams: roadmap.plannedExams,
         needsExamConfirmation: roadmap.needsExamConfirmation,
+        needsGradeConfirmation: roadmap.needsGradeConfirmation,
+        needsGraduationSubjectsConfirmation: roadmap.needsGraduationSubjectsConfirmation,
         isTimelineEstimated: roadmap.isTimelineEstimated,
+        examAllocations: roadmap.examAllocations?.map(a => ({
+          exam: a.exam,
+          hours: a.hours,
+          timeframe: a.timeframe,
+          targetDate: a.targetDate,
+          isPrimary: a.isPrimary
+        })),
         tailoredNote: roadmap.tailoredNote,
         phases: roadmap.phases.slice(0, 4).map(p => ({
           name: p.name,

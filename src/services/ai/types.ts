@@ -87,7 +87,16 @@ export interface CounselorContextPayload {
     allocationSummary?: string;
     plannedExams?: string[];
     needsExamConfirmation?: boolean;
+    needsGradeConfirmation?: boolean;
+    needsGraduationSubjectsConfirmation?: boolean;
     isTimelineEstimated?: boolean;
+    examAllocations?: Array<{
+      exam: string;
+      hours: number;
+      timeframe: string;
+      targetDate?: string;
+      isPrimary: boolean;
+    }>;
     tailoredNote?: string;
     phases: Array<{
       name: string;

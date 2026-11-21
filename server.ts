@@ -8,6 +8,7 @@ import { adminRouter } from './server/adminRoutes';
 import { publicRouter } from './server/publicRoutes';
 import { adminDataService } from './server/adminDataService';
 import { validateAndMergeAIRoadmap } from './src/engine/roadmapValidator';
+import { normalizeLLMProvider } from './src/types';
 
 dotenv.config();
 
@@ -198,7 +199,12 @@ async function startServer() {
 - Điểm HSA (ĐHQG Hà Nội - Thang 150): ${exams.hsaScore ? `${exams.hsaScore}/150 điểm` : 'Chưa thi / Đang ôn tập'}
 - Điểm TSA (Bách Khoa Hà Nội - Thang 100): ${exams.tsaScore ? `${exams.tsaScore}/100 điểm` : 'Chưa thi / Đang ôn tập'}
 - Điểm V-ACT (ĐHQG TP.HCM - Thang 1200): ${exams.vactScore ? `${exams.vactScore}/1200 điểm` : 'Chưa thi / Đang ôn tập'}
-- Khối thi xét tuyển THPT: ${exams.thptCombo || 'A00 / A01 / D01'} - Điểm thi ước tính / thực tế: ${exams.thptScore ? `${exams.thptScore} điểm` : 'Chưa cập nhật'}
+- Môn thi Tốt nghiệp THPT (Thông tư 24/2024): ${
+  exams.thptGraduationSubjects?.electives?.length
+    ? `Toán học, Ngữ văn + Tự chọn: ${exams.thptGraduationSubjects.electives.join(', ')}`
+    : 'Toán học, Ngữ văn (Chưa chọn đủ 2 môn tự chọn)'
+}
+- Tổ hợp xét tuyển Đại học mục tiêu: ${exams.thptAdmissionCombo || exams.thptCombo || 'Chưa chọn tổ hợp ĐH cụ thể'} - Điểm THPT ước tính / thực tế: ${exams.thptScore ? `${exams.thptScore} điểm` : 'Chưa cập nhật'}
 - Chứng chỉ / Giải thưởng học sinh giỏi: ${(exams.awards || []).join(', ') || 'Chưa có chứng chỉ riêng'}
 
 3. KẾT QUẢ TRẮC NGHIỆM SỞ THÍCH NGHỀ NGHIỆP HOLLAND (RIASEC):
@@ -497,9 +503,12 @@ QUY TẮC TƯ VẤN BẮT BUỘC:
       groqMessages.push({ role: 'user', content: userQuestion });
 
       // =========================================================================
-      // STEP 0: Custom Local AI / Ollama Endpoint (Executed when provider is custom/local)
+      // STEP 0: Provider Routing ('offline-engine' | 'ollama' | 'gemini')
       // =========================================================================
-      const isCustomLocal = llmConfig?.provider === 'custom' || !!llmConfig?.customEndpoint;
+      const canonicalProvider = normalizeLLMProvider(llmConfig?.provider);
+      const isCustomLocal = canonicalProvider === 'ollama';
+      const isOfflineEngine = canonicalProvider === 'offline-engine';
+
       if (isCustomLocal) {
         const cleanEndpoint = (llmConfig?.customEndpoint || 'http://localhost:11434').replace(/\/+$/, '');
         const targetModel = llmConfig?.modelName || 'qwen2.5:7b';
@@ -537,7 +546,7 @@ QUY TẮC TƯ VẤN BẮT BUỘC:
             const text = data?.message?.content || data?.choices?.[0]?.message?.content || data?.response || '';
             if (text) {
               reply = text;
-              usedModelTag = `Local AI: ${targetModel} (Ollama)`;
+              usedModelTag = `Local LLM: ${targetModel} (Ollama)`;
             }
           } else {
             console.warn(`[Local AI] Server at ${cleanEndpoint} returned status ${localRes.status}`);
@@ -553,7 +562,7 @@ QUY TẮC TƯ VẤN BẮT BUỘC:
       // STEP 1: AI Chính — Gemini 3.8 Flash (Native Google AI Studio Cloud)
       // =========================================================================
       const ai = getAIClient();
-      if (!reply && !isCustomLocal && ai) {
+      if (!reply && !isCustomLocal && !isOfflineEngine && ai) {
         try {
           const response = await ai.models.generateContent({
             model: chosenModel,
@@ -578,7 +587,7 @@ QUY TẮC TƯ VẤN BẮT BUỘC:
       // =========================================================================
       // STEP 2: Backup 1 — Qwen 3.8 / GPT-OSS (Called ONLY if Gemini failed and key exists)
       // =========================================================================
-      if (!reply && !isCustomLocal && groqApiKey) {
+      if (!reply && !isCustomLocal && !isOfflineEngine && groqApiKey) {
         try {
           const qwenRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -640,7 +649,7 @@ QUY TẮC TƯ VẤN BẮT BUỘC:
         const hsa = p.examScores?.hsaScore;
         const tsa = p.examScores?.tsaScore;
         const thpt = p.examScores?.thptScore;
-        const thptCombo = p.examScores?.thptCombo || 'A00 (Toán, Lý, Hóa)';
+        const thptCombo = p.examScores?.thptAdmissionCombo || p.examScores?.thptCombo || 'Chưa chọn tổ hợp xét tuyển ĐH';
         const careerTitle = req.body?.context?.careerTitle || 'Robotics & Automation Engineer';
         const cluster = req.body?.context?.cluster || 'Kỹ thuật & Công nghệ cao';
         const q = (userQuestion || '').toLowerCase().trim();
@@ -918,9 +927,9 @@ Tôi luôn ở đây để đồng hành cùng bạn. Bạn có muốn đi sâu 
       });
     } catch (err: any) {
       console.warn('AI counseling endpoint error:', err?.message || err);
-      const isCustomLocal = req.body?.llmConfig?.provider === 'custom' || !!req.body?.llmConfig?.customEndpoint;
+      const isCustomLocal = normalizeLLMProvider(req.body?.llmConfig?.provider) === 'ollama';
       const fallbackTag = isCustomLocal
-        ? 'Offline Knowledge Engine (Ollama error)'
+        ? 'Offline Knowledge Engine (Ollama unavailable)'
         : 'EduPath Knowledge Engine (Offline)';
       res.json({
         reply: `Chào bạn! Tôi đã ghi nhận câu hỏi của bạn: "${userQuestion}". Để hỗ trợ bạn một cách chính xác nhất, bạn có thể cho tôi biết rõ hơn bạn muốn tập trung vào việc đánh giá điểm số (HSA, TSA, THPT) hay chiến lược chọn trường đại học?`,
@@ -975,6 +984,23 @@ Tôi luôn ở đây để đồng hành cùng bạn. Bạn có muốn đi sâu 
       return res.status(400).json({ error: 'baseRoadmap is required' });
     }
 
+    const canonicalProvider = normalizeLLMProvider(llmConfig?.provider);
+
+    if (canonicalProvider === 'offline-engine') {
+      return res.json({
+        roadmap: { ...baseRoadmap, source: 'engine', modelUsed: 'Engine chuẩn hóa (Offline — Không dùng LLM)' },
+        usedAI: false,
+        modelUsed: 'Engine chuẩn hóa (Offline — Không dùng LLM)',
+        validationStatus: {
+          jsonValid: true,
+          schemaValid: true,
+          contentAccepted: false,
+          aiChangesApplied: false,
+          fallbackUsed: false
+        }
+      });
+    }
+
     const plannedExams = Array.isArray(baseRoadmap.plannedExams) ? baseRoadmap.plannedExams : [];
     const examSummaryText =
       plannedExams.length > 0
@@ -987,12 +1013,13 @@ Tôi luôn ở đây để đồng hành cùng bạn. Bạn có muốn đi sâu 
 Nhiệm vụ của bạn là TINH CHỈNH CÂU CHỮ, PHƯƠNG PHÁP HỌC VÀ MỤC TIÊU HÀNH ĐỘNG cho lộ trình nền (baseRoadmap) sao cho sát với hồ sơ học viên nhất.
 
 RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
-1. KHÔNG thay đổi số lượng giai đoạn, phaseNumber, duration, stageCategory, hoặc tỷ lệ % (examRatio / skillRatio).
+1. KHÔNG thay đổi số lượng giai đoạn, phaseNumber, duration, stageCategory, hoặc tỷ lệ % (examRatio / skillRatio) hay giờ/tuần đã phân bổ.
 2. ${examSummaryText} — TUYỆT ĐỐI KHÔNG tự ý nhắc đến hoặc thêm kỳ thi nào ngoài danh sách đã chọn.
 3. KHÔNG tự bịa điểm số thi, ngày thi cụ thể, điểm chuẩn trường đại học, hay phần trăm cơ hội đỗ.
-4. Nếu học sinh chưa có dữ liệu chuyên đề yếu (hasTopicDiagnostic = false), KHÔNG tự đoán chuyên đề yếu mà giữ hướng dẫn làm bài kiểm tra chẩn đoán/thi thử.
-5. Nếu giai đoạn có stageCategory === 'pre-exam', CHỈ tập trung ôn thi + kỹ năng nền tảng (quản lý thời gian, đọc hiểu, logic, tiếng Anh học thuật). KHÔNG đưa kỹ năng chuyên ngành nặng (React, Docker, Machine Learning, Capstone) vào giai đoạn Trước kỳ thi.
-6. Chỉ trả về đúng 1 JSON object hợp lệ theo cấu trúc:
+4. PHẢI giữ nguyên toàn bộ chuyên đề yếu do học sinh tự khai báo (weakTopics). Nếu học sinh chưa có dữ liệu chuyên đề yếu (hasTopicDiagnostic = false), KHÔNG tự đoán chuyên đề yếu.
+5. Phân biệt rõ Môn thi Tốt nghiệp THPT (Toán, Ngữ văn + 2 môn tự chọn theo Thông tư 24/2024) với Tổ hợp xét tuyển Đại học (A00, A01, D01...).
+6. Nếu giai đoạn có stageCategory === 'pre-exam', CHỈ tập trung ôn thi + kỹ năng nền tảng (quản lý thời gian, đọc hiểu, logic, tiếng Anh học thuật). KHÔNG đưa kỹ năng chuyên ngành nặng (React, Docker, Machine Learning, Capstone, Portfolio lớn) vào giai đoạn Trước kỳ thi.
+7. Chỉ trả về đúng 1 JSON object hợp lệ theo cấu trúc:
 {
   "tailoredNote": "string ngắn gọn cá nhân hóa",
   "phases": [
@@ -1003,7 +1030,7 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
       "milestone": "string",
       "studyTasks": [
         {
-          "topicFocus": "string (chỉ tinh chỉnh nếu hasTopicDiagnostic=true)",
+          "topicFocus": "string (phải giữ nguyên chuyên đề yếu gốc của học sinh nếu có)",
           "specificGoal": "string",
           "studyMethod": "string",
           "verificationMethod": "string"
@@ -1028,9 +1055,12 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
           vactScore: profile?.examScores?.vactScore,
           tsaScore: profile?.examScores?.tsaScore,
           thptScore: profile?.examScores?.thptScore,
-          thptCombo: profile?.examScores?.thptCombo,
+          thptAdmissionCombo: profile?.examScores?.thptAdmissionCombo || profile?.examScores?.thptCombo,
+          thptGraduationSubjects: profile?.examScores?.thptGraduationSubjects,
           plannedExams,
           timeUntilExam: profile?.examScores?.timeUntilExam,
+          examTimelines: profile?.examScores?.examTimelines,
+          primaryExam: profile?.examScores?.primaryExam,
           studyGoal: profile?.examScores?.studyGoal,
           weakTopics: profile?.examScores?.weakTopics || []
         }
@@ -1044,6 +1074,7 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
       baseRoadmap: {
         stageLabel: baseRoadmap.stageLabel,
         allocation: baseRoadmap.allocation,
+        examAllocations: baseRoadmap.examAllocations,
         tailoredNote: baseRoadmap.tailoredNote,
         phases: baseRoadmap.phases.map((p: any) => ({
           phaseNumber: p.phaseNumber,
@@ -1058,9 +1089,9 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
       }
     });
 
-    const isCustomLocal = llmConfig?.provider === 'custom' || !!llmConfig?.customEndpoint;
+    const isCustomLocal = canonicalProvider === 'ollama';
 
-    // 1. Try Custom/Local Ollama when configured
+    // 1. Try Local LLM / Ollama ONLY when explicitly selected
     if (isCustomLocal) {
       const cleanEndpoint = (llmConfig?.customEndpoint || 'http://localhost:11434').replace(/\/+$/, '');
       const targetModel = llmConfig?.modelName || 'qwen2.5:7b';
@@ -1099,11 +1130,19 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
         if (localRes.ok) {
           const data = await localRes.json();
           const rawText = data?.message?.content || data?.choices?.[0]?.message?.content || data?.response || '';
-          const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, `Local AI: ${targetModel}`);
+          const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, `Local LLM: ${targetModel} (Ollama)`);
           return res.json({
             roadmap: validation.roadmap,
             usedAI: validation.validated,
-            modelUsed: validation.validated ? `Local AI: ${targetModel}` : 'EduPath Engine (Fallback)',
+            modelUsed: validation.validated ? `Local LLM: ${targetModel} (Ollama)` : 'Engine chuẩn hóa (Fallback từ Ollama)',
+            validationStatus: {
+              jsonValid: validation.jsonValid,
+              schemaValid: validation.schemaValid,
+              contentAccepted: validation.contentAccepted,
+              aiChangesApplied: validation.aiChangesApplied,
+              fallbackUsed: validation.fallbackUsed,
+              rejectedReasons: validation.rejectedReasons
+            },
             errorNotice: validation.validated ? undefined : validation.warnings[0]
           });
         }
@@ -1112,19 +1151,27 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
       }
 
       return res.json({
-        roadmap: { ...baseRoadmap, source: 'engine' },
+        roadmap: { ...baseRoadmap, source: 'engine', modelUsed: 'Engine chuẩn hóa (Ollama unavailable)' },
         usedAI: false,
-        modelUsed: 'EduPath Engine (Ollama unavailable)',
-        errorNotice: `Máy chủ Local AI (${cleanEndpoint}) chưa phản hồi — đang dùng lộ trình chuẩn hóa từ Engine.`
+        modelUsed: 'Engine chuẩn hóa (Ollama unavailable)',
+        validationStatus: {
+          jsonValid: false,
+          schemaValid: false,
+          contentAccepted: false,
+          aiChangesApplied: false,
+          fallbackUsed: true,
+          rejectedReasons: [`Không kết nối được tới máy chủ Ollama tại ${cleanEndpoint}`]
+        },
+        errorNotice: `Máy chủ Local LLM (${cleanEndpoint}) chưa phản hồi — đang giữ lộ trình chuẩn hóa từ Engine.`
       });
     }
 
-    // 2. Gemini 4 Hydrogen (Default Cloud Model per Gemini API guidelines)
+    // 2. Gemini Cloud (Default Cloud Model)
     const ai = getAIClient();
     if (ai) {
       try {
         const response = await ai.models.generateContent({
-          model: 'gemini-4-hydrogen',
+          model: 'gemini-3.8-flash',
           contents: [
             {
               role: 'user',
@@ -1140,11 +1187,19 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
         });
 
         const rawText = response.text || '';
-        const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, 'Gemini 4 Hydrogen');
+        const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, 'Gemini 3.8 Flash (Cloud)');
         return res.json({
           roadmap: validation.roadmap,
           usedAI: validation.validated,
-          modelUsed: validation.validated ? 'Gemini 4 Hydrogen' : 'EduPath Engine (Fallback)',
+          modelUsed: validation.validated ? 'Gemini 3.8 Flash (Cloud)' : 'Engine chuẩn hóa (Fallback từ Gemini)',
+          validationStatus: {
+            jsonValid: validation.jsonValid,
+            schemaValid: validation.schemaValid,
+            contentAccepted: validation.contentAccepted,
+            aiChangesApplied: validation.aiChangesApplied,
+            fallbackUsed: validation.fallbackUsed,
+            rejectedReasons: validation.rejectedReasons
+          },
           errorNotice: validation.validated ? undefined : validation.warnings[0]
         });
       } catch (gemErr: any) {
@@ -1154,10 +1209,18 @@ RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
 
     // 3. Clean Deterministic Fallback
     return res.json({
-      roadmap: { ...baseRoadmap, source: 'engine' },
+      roadmap: { ...baseRoadmap, source: 'engine', modelUsed: 'Engine chuẩn hóa (Fallback Offline)' },
       usedAI: false,
-      modelUsed: 'EduPath Engine (Offline)',
-      errorNotice: 'Chưa kết nối dịch vụ AI — đang hiển thị lộ trình chuẩn hóa từ Engine.'
+      modelUsed: 'Engine chuẩn hóa (Fallback Offline)',
+      validationStatus: {
+        jsonValid: false,
+        schemaValid: false,
+        contentAccepted: false,
+        aiChangesApplied: false,
+        fallbackUsed: true,
+        rejectedReasons: ['Chưa kết nối dịch vụ AI hoặc API gặp lỗi']
+      },
+      errorNotice: 'Chưa kết nối dịch vụ AI — đang giữ nguyên lộ trình chuẩn hóa từ Engine.'
     });
   });
 

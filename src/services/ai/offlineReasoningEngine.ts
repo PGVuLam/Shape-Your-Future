@@ -26,7 +26,7 @@ export function generateOfflineCounselingResponse(
   const tsa = p.examScores?.tsaScore;
   const vact = p.examScores?.vactScore;
   const thpt = p.examScores?.thptScore;
-  const thptCombo = p.examScores?.thptCombo || 'A00 / A01 / D01';
+  const thptCombo = p.examScores?.thptAdmissionCombo || p.examScores?.thptCombo || 'Chưa chọn tổ hợp xét tuyển ĐH';
   const awards = p.examScores?.awards || [];
   const salaryDesc = context.salaryLevel || '15 - 30 triệu VNĐ/tháng (theo dữ liệu tham khảo CSDL nghề)';
 

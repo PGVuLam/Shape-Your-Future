@@ -99,11 +99,18 @@ export function createEmptyProfile(ageGroup: AgeGroup = '15-18'): UserProfile {
       vactScore: undefined,
       tsaScore: undefined,
       pedagogyScore: undefined,
+      thptAdmissionCombo: '',
       thptCombo: '',
+      thptGraduationSubjects: {
+        compulsory: ['Toán học', 'Ngữ văn'],
+        electives: []
+      },
       thptScore: undefined,
       awards: [],
       plannedExams: [],
       timeUntilExam: undefined,
+      examTimelines: {},
+      primaryExam: undefined,
       studyGoal: '',
       weakTopics: [],
       customExamRatio: undefined

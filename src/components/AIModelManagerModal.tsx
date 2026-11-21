@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Check
 } from 'lucide-react';
-import { LLMConfig, LLMProviderType } from '../types';
+import { LLMConfig, LLMProviderType, normalizeLLMProvider } from '../types';
 
 interface AIModelManagerModalProps {
   isOpen: boolean;
@@ -29,14 +29,22 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
   config,
   onSaveConfig
 }) => {
-  const [localConfig, setLocalConfig] = useState<LLMConfig>(config);
+  const [localConfig, setLocalConfig] = useState<LLMConfig>(() => ({
+    ...config,
+    provider: normalizeLLMProvider(config.provider)
+  }));
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
   const [testLatency, setTestLatency] = useState<number | null>(null);
 
+  const activeProvider = normalizeLLMProvider(localConfig.provider);
+
   // Sync when modal opens
   React.useEffect(() => {
-    setLocalConfig(config);
+    setLocalConfig({
+      ...config,
+      provider: normalizeLLMProvider(config.provider)
+    });
     setTestStatus('idle');
     setTestMessage('');
   }, [config, isOpen]);
@@ -50,15 +58,15 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
 
     const startTime = Date.now();
 
-    if (localConfig.provider === 'local') {
-      await new Promise(r => setTimeout(r, 200));
+    if (activeProvider === 'offline-engine') {
+      await new Promise(r => setTimeout(r, 150));
       setTestStatus('success');
       setTestLatency(Date.now() - startTime);
-      setTestMessage('Trình suy luận Cục bộ tích hợp luôn sẵn sàng hoạt động 100% offline.');
+      setTestMessage('Engine Quy tắc Nội bộ (Offline — không dùng LLM) luôn sẵn sàng 100% trên trình duyệt.');
       return;
     }
 
-    if (localConfig.provider === 'gemini') {
+    if (activeProvider === 'gemini') {
       try {
         const res = await fetch('/api/health');
         const latency = Date.now() - startTime;
@@ -129,21 +137,21 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
     if (preset === 'ollama') {
       setLocalConfig(prev => ({
         ...prev,
-        provider: 'custom',
+        provider: 'ollama',
         customEndpoint: 'http://localhost:11434',
         modelName: 'qwen2.5:7b'
       }));
     } else if (preset === 'lmstudio') {
       setLocalConfig(prev => ({
         ...prev,
-        provider: 'custom',
+        provider: 'ollama',
         customEndpoint: 'http://localhost:1234/v1',
         modelName: 'local-model'
       }));
     } else {
       setLocalConfig(prev => ({
         ...prev,
-        provider: 'custom',
+        provider: 'ollama',
         customEndpoint: 'http://localhost:8000/v1',
         modelName: 'default'
       }));
@@ -207,7 +215,7 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
                   setTestStatus('idle');
                 }}
                 className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
-                  localConfig.provider === 'gemini'
+                  activeProvider === 'gemini'
                     ? 'bg-indigo-50/90 border-indigo-600 shadow-sm ring-2 ring-indigo-200'
                     : 'bg-white border-slate-200 hover:border-slate-300'
                 }`}
@@ -216,14 +224,14 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
                   <span className="p-1.5 rounded-xl bg-indigo-100 text-indigo-700">
                     <Sparkles className="w-4 h-4" />
                   </span>
-                  {localConfig.provider === 'gemini' && (
+                  {activeProvider === 'gemini' && (
                     <span className="w-2 h-2 rounded-full bg-indigo-600" />
                   )}
                 </div>
                 <div>
                   <div className="font-bold text-slate-900 text-xs">Google Gemini Cloud</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    Thông minh nhất, dữ liệu chuẩn xác, phân tích sâu mọi độ tuổi.
+                    LLM đám mây (Gemini 3.8 Flash), phân tích ngữ cảnh sâu theo hồ sơ.
                   </div>
                 </div>
                 <span className="inline-block px-2 py-0.5 rounded-md bg-indigo-100/70 text-indigo-800 font-bold text-[10px] w-fit">
@@ -231,20 +239,25 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
                 </span>
               </button>
 
-              {/* Option 2: Local AI on Computer (Ollama, LM Studio) */}
+              {/* Option 2: Local LLM on Computer (Ollama, LM Studio) */}
               <button
                 type="button"
                 onClick={() => {
                   setLocalConfig(prev => ({
                     ...prev,
-                    provider: 'custom',
+                    provider: 'ollama',
                     customEndpoint: prev.customEndpoint || 'http://localhost:11434',
-                    modelName: prev.modelName || 'qwen2.5:7b'
+                    modelName:
+                      !prev.modelName ||
+                      prev.modelName.startsWith('gemini') ||
+                      prev.modelName.includes('Engine')
+                        ? 'qwen2.5:7b'
+                        : prev.modelName
                   }));
                   setTestStatus('idle');
                 }}
                 className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
-                  localConfig.provider === 'custom'
+                  activeProvider === 'ollama'
                     ? 'bg-emerald-50/90 border-emerald-600 shadow-sm ring-2 ring-emerald-200'
                     : 'bg-white border-slate-200 hover:border-slate-300'
                 }`}
@@ -253,34 +266,34 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
                   <span className="p-1.5 rounded-xl bg-emerald-100 text-emerald-700">
                     <Server className="w-4 h-4" />
                   </span>
-                  {localConfig.provider === 'custom' && (
+                  {activeProvider === 'ollama' && (
                     <span className="w-2 h-2 rounded-full bg-emerald-600" />
                   )}
                 </div>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">Model Cục bộ Trên Máy</div>
+                  <div className="font-bold text-slate-900 text-xs">Local LLM trên Máy (Ollama)</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    Kết nối Ollama, LM Studio, vLLM hoặc DeepSeek chạy tại localhost.
+                    Kết nối Ollama / LM Studio chạy cục bộ tại localhost (thực sự gọi LLM local).
                   </div>
                 </div>
                 <span className="inline-block px-2 py-0.5 rounded-md bg-emerald-100/70 text-emerald-800 font-bold text-[10px] w-fit">
-                  100% Riêng tư
+                  Local LLM Riêng tư
                 </span>
               </button>
 
-              {/* Option 3: Built-in Offline Engine */}
+              {/* Option 3: Built-in Deterministic Offline Engine (NOT an LLM) */}
               <button
                 type="button"
                 onClick={() => {
                   setLocalConfig(prev => ({
                     ...prev,
-                    provider: 'local',
-                    modelName: 'EduPath Local Inference Engine'
+                    provider: 'offline-engine',
+                    modelName: 'EduPath Deterministic Engine (Offline)'
                   }));
                   setTestStatus('idle');
                 }}
                 className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
-                  localConfig.provider === 'local'
+                  activeProvider === 'offline-engine'
                     ? 'bg-purple-50/90 border-purple-600 shadow-sm ring-2 ring-purple-200'
                     : 'bg-white border-slate-200 hover:border-slate-300'
                 }`}
@@ -289,25 +302,25 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
                   <span className="p-1.5 rounded-xl bg-purple-100 text-purple-700">
                     <Zap className="w-4 h-4" />
                   </span>
-                  {localConfig.provider === 'local' && (
+                  {activeProvider === 'offline-engine' && (
                     <span className="w-2 h-2 rounded-full bg-purple-600" />
                   )}
                 </div>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">Trình suy luận Cục bộ</div>
+                  <div className="font-bold text-slate-900 text-xs">Engine Quy tắc Nội bộ</div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    Chạy ngay trên trình duyệt, siêu tốc, không cần cài đặt thêm phần mềm.
+                    Chạy Offline trên trình duyệt bằng bộ quy tắc chuẩn hóa (không dùng LLM).
                   </div>
                 </div>
                 <span className="inline-block px-2 py-0.5 rounded-md bg-purple-100/70 text-purple-800 font-bold text-[10px] w-fit">
-                  Không cần mạng
+                  Offline — Không LLM
                 </span>
               </button>
             </div>
           </div>
 
           {/* Conditional Config Details according to selected provider */}
-          {localConfig.provider === 'gemini' && (
+          {activeProvider === 'gemini' && (
             <div className="p-4 rounded-2xl bg-white border border-slate-200/90 space-y-3 shadow-2xs">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
@@ -370,7 +383,7 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
             </div>
           )}
 
-          {localConfig.provider === 'custom' && (
+          {activeProvider === 'ollama' && (
             <div className="p-4 rounded-2xl bg-white border border-slate-200/90 space-y-3.5 shadow-2xs">
               <div className="flex items-center justify-between">
                 <span className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
@@ -443,16 +456,15 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
             </div>
           )}
 
-          {localConfig.provider === 'local' && (
+          {activeProvider === 'offline-engine' && (
             <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-200/80 space-y-2">
               <div className="font-bold text-purple-900 text-xs flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-purple-700" />
-                Trình suy luận Hướng nghiệp Độc lập (Built-in In-Browser Reasoning)
+                Engine Quy tắc Nội bộ (Offline Deterministic Engine — Không dùng LLM)
               </div>
               <p className="text-purple-800 text-[11px] leading-relaxed">
-                Hệ thống áp dụng bộ quy tắc ma trận khoa học đối chiếu 6 nhóm Holland RIASEC, 16 hình mẫu MBTI,
-                chuẩn đầu vào kỳ thi HSA/TSA/V-ACT/THPTQG và phân tầng 6 nhóm tuổi.
-                Toàn bộ dữ liệu của bạn ở lại 100% trên trình duyệt.
+                Chế độ này chạy 100% cục bộ trên trình duyệt bằng các thuật toán và quy tắc chuẩn hóa (RIASEC, MBTI,
+                lịch ôn thi phân bổ giờ theo hồ sơ và phân tầng 6 nhóm tuổi), không gọi mô hình ngôn ngữ lớn (LLM).
               </p>
             </div>
           )}
@@ -555,11 +567,11 @@ export const AIModelManagerModal: React.FC<AIModelManagerModalProps> = ({
         <div className="px-6 py-4 bg-white border-t border-slate-200 flex items-center justify-between shrink-0">
           <div className="text-[11px] text-slate-500 hidden sm:block">
             Mô hình đang chọn: <strong className="text-slate-800">{
-              localConfig.provider === 'gemini'
+              activeProvider === 'gemini'
                 ? 'Gemini 3.8 Flash (Cloud)'
-                : localConfig.provider === 'custom'
-                ? `Local Model (${localConfig.modelName || 'Custom'})`
-                : 'Offline Engine'
+                : activeProvider === 'ollama'
+                ? `Local LLM (${localConfig.modelName || 'Ollama'})`
+                : 'Offline Deterministic Engine (Không dùng LLM)'
             }</strong>
           </div>
 

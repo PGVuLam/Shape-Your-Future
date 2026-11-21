@@ -1,6 +1,7 @@
 import {
   AgeGroup,
   Career,
+  ExamAllocationSummary,
   ExamTimeframe,
   LearningRoadmap,
   PlannedExamCode,
@@ -8,23 +9,58 @@ import {
   RoadmapPhase,
   SkillGapAnalysis,
   StudyTaskItem,
+  THPT_COMPULSORY_SUBJECTS,
   UserProfile
 } from '../types';
 import { analyzeSkillGap } from './skillGapEngine';
 
 /**
- * Helper: Maps THPT combo code (e.g. "A00 (Toán, Lý, Hóa)") to concrete subject labels
- * without ever guessing a combo when none was selected by the student.
+ * Helper: Retrieves university admission combination label ONLY for admission planning
+ * (never used as THPT graduation exam study subjects).
  */
-function parseThptComboSubjects(thptCombo?: string): string {
-  if (!thptCombo || !thptCombo.trim()) {
-    return 'Các môn trong tổ hợp xét tuyển THPT (chưa chọn khối thi cụ thể)';
+function getAdmissionComboLabel(profile: UserProfile): string {
+  const combo = profile.examScores?.thptAdmissionCombo || profile.examScores?.thptCombo;
+  if (!combo || !combo.trim()) {
+    return 'Chưa chọn tổ hợp xét tuyển ĐH cụ thể';
   }
-  const match = thptCombo.match(/\(([^)]+)\)/);
-  if (match && match[1]) {
-    return match[1].trim();
-  }
-  return thptCombo.trim();
+  return combo.trim();
+}
+
+/**
+ * Resolves actual THPT Graduation Exam subjects under Circular 24/2024/TT-BGDĐT
+ * (2 compulsory: Toán học, Ngữ văn + 2 electives). NEVER assumes admission combo = graduation subjects.
+ */
+function resolveThptGraduationSubjects(profile: UserProfile): {
+  compulsory: string[];
+  electives: string[];
+  allSubjects: string[];
+  isComplete: boolean;
+  displayLabel: string;
+} {
+  const rawCompulsory = profile.examScores?.thptGraduationSubjects?.compulsory;
+  const compulsory =
+    Array.isArray(rawCompulsory) && rawCompulsory.length >= 2
+      ? rawCompulsory.map(s => s.trim()).filter(Boolean)
+      : [...THPT_COMPULSORY_SUBJECTS];
+
+  const rawElectives = profile.examScores?.thptGraduationSubjects?.electives || [];
+  const electives = Array.from(
+    new Set(
+      rawElectives
+        .map(s => s.trim())
+        .filter(s => Boolean(s) && !compulsory.some(c => c.toLowerCase() === s.toLowerCase()))
+    )
+  ).slice(0, 2);
+
+  const isComplete = electives.length >= 2;
+  const allSubjects = [...compulsory, ...electives];
+  const displayLabel = isComplete
+    ? `${compulsory.join(', ')} + Tự chọn: ${electives.join(', ')}`
+    : electives.length === 1
+    ? `${compulsory.join(', ')} + ${electives[0]} (thiếu 1 môn tự chọn)`
+    : `${compulsory.join(', ')} (chưa chọn 2 môn tự chọn)`;
+
+  return { compulsory, electives, allSubjects, isComplete, displayLabel };
 }
 
 /**
@@ -48,17 +84,222 @@ function normalizeAgeGroup(ageGroup?: AgeGroup, age?: number): '6-10' | '11-14' 
 }
 
 /**
- * Detects high-school grade ('10' | '11' | '12') from explicit profile.grade or age when in 15-18.
+ * Detects high-school grade ('10' | '11' | '12') strictly from explicit profile.grade.
+ * Never silently overrides missing grade via age (returns needsConfirmation=true with suggestedGrade).
  */
-function detectHighSchoolGrade(profile: UserProfile): '10' | '11' | '12' {
+export function detectHighSchoolGrade(profile: UserProfile): {
+  grade: '10' | '11' | '12' | null;
+  suggestedGrade: '10' | '11' | '12';
+  needsConfirmation: boolean;
+} {
   const g = (profile.grade || '').toLowerCase();
-  if (g.includes('12')) return '12';
-  if (g.includes('11')) return '11';
-  if (g.includes('10')) return '10';
   const age = Number(profile.age || 0);
-  if (age >= 18) return '12';
-  if (age === 17) return '11';
-  return '10';
+  const suggestedGrade: '10' | '11' | '12' = age >= 18 ? '12' : age === 17 ? '11' : '10';
+
+  if (g.includes('12')) return { grade: '12', suggestedGrade: '12', needsConfirmation: false };
+  if (g.includes('11')) return { grade: '11', suggestedGrade: '11', needsConfirmation: false };
+  if (g.includes('10')) return { grade: '10', suggestedGrade: '10', needsConfirmation: false };
+
+  return {
+    grade: null,
+    suggestedGrade,
+    needsConfirmation: true
+  };
+}
+
+interface ResolvedExamTimeline {
+  exam: PlannedExamCode;
+  timeframe: ExamTimeframe;
+  targetDate?: string;
+  isPrimary: boolean;
+  urgencyRank: number;
+}
+
+const TIMEFRAME_URGENCY_RANK: Record<ExamTimeframe, number> = {
+  '< 1 tháng': 1,
+  '1–3 tháng': 2,
+  '3–6 tháng': 3,
+  '6–9 tháng': 4,
+  '> 9 tháng': 5,
+  unknown: 6
+};
+
+function resolveExamTimelines(
+  profile: UserProfile,
+  plannedExams: PlannedExamCode[]
+): {
+  perExam: Record<PlannedExamCode, ResolvedExamTimeline>;
+  overallTimeframe: ExamTimeframe;
+  hasAnyConcreteTimeline: boolean;
+  hasDistinctTimelines: boolean;
+} {
+  const sharedTimeframe: ExamTimeframe = profile.examScores?.timeUntilExam || 'unknown';
+  const customTimelines = profile.examScores?.examTimelines || {};
+  const explicitPrimary = profile.examScores?.primaryExam;
+
+  const perExam = {} as Record<PlannedExamCode, ResolvedExamTimeline>;
+  for (const exam of ['THPT', 'HSA', 'V-ACT', 'TSA'] as PlannedExamCode[]) {
+    const entry = customTimelines[exam];
+    const tf: ExamTimeframe = entry?.timeframe || sharedTimeframe || 'unknown';
+    const targetDate = entry?.targetDate?.trim() || undefined;
+    const isPrimary = Boolean(entry?.isPrimary || explicitPrimary === exam);
+    perExam[exam] = {
+      exam,
+      timeframe: tf,
+      targetDate,
+      isPrimary,
+      urgencyRank: TIMEFRAME_URGENCY_RANK[tf] ?? 6
+    };
+  }
+
+  const activeList = plannedExams.map(e => perExam[e]);
+  const concreteList = activeList.filter(item => item.timeframe !== 'unknown');
+  const hasAnyConcreteTimeline = concreteList.length > 0 || sharedTimeframe !== 'unknown';
+
+  let overallTimeframe: ExamTimeframe = sharedTimeframe;
+  if (concreteList.length > 0) {
+    // Prefer nearest concrete timeframe (or primary if concrete) so short-sprint needs aren't masked
+    const sorted = [...concreteList].sort((a, b) => a.urgencyRank - b.urgencyRank);
+    overallTimeframe = sorted[0].timeframe;
+  }
+
+  const uniqueActiveTimeframes = new Set(activeList.map(i => i.timeframe));
+  const hasDistinctTimelines = activeList.length > 1 && uniqueActiveTimeframes.size > 1;
+
+  return {
+    perExam,
+    overallTimeframe,
+    hasAnyConcreteTimeline,
+    hasDistinctTimelines
+  };
+}
+
+function getExamNormalizedScore(profile: UserProfile, exam: PlannedExamCode): number | null {
+  const es = profile.examScores;
+  if (!es) return null;
+  if (exam === 'THPT' && typeof es.thptScore === 'number') return Math.max(0, Math.min(1, es.thptScore / 30));
+  if (exam === 'HSA' && typeof es.hsaScore === 'number') return Math.max(0, Math.min(1, es.hsaScore / 150));
+  if (exam === 'V-ACT' && typeof es.vactScore === 'number') return Math.max(0, Math.min(1, es.vactScore / 1200));
+  if (exam === 'TSA' && typeof es.tsaScore === 'number') return Math.max(0, Math.min(1, es.tsaScore / 100));
+  return null;
+}
+
+/**
+ * Dynamically allocates weekly exam study hours strictly within examBudgetHours.
+ * Guarantees sum(allocated) <= examBudgetHours and explains trade-offs on tight schedules.
+ */
+function allocateExamWeeklyHours(
+  profile: UserProfile,
+  plannedExams: PlannedExamCode[],
+  examBudgetHours: number,
+  perExamTimelines: Record<PlannedExamCode, ResolvedExamTimeline>
+): {
+  allocations: ExamAllocationSummary[];
+  tradeoffWarning?: string;
+} {
+  if (plannedExams.length === 0 || examBudgetHours <= 0) {
+    return { allocations: [] };
+  }
+
+  const urgencyBoost: Record<ExamTimeframe, number> = {
+    '< 1 tháng': 1.0,
+    '1–3 tháng': 0.7,
+    '3–6 tháng': 0.4,
+    '6–9 tháng': 0.2,
+    '> 9 tháng': 0.0,
+    unknown: 0.1
+  };
+
+  const hasExplicitPrimary = plannedExams.some(e => perExamTimelines[e].isPrimary);
+
+  const scored = plannedExams.map((exam, idx) => {
+    const tl = perExamTimelines[exam];
+    let weight = 1.0;
+    const factors: string[] = [];
+
+    if (tl.isPrimary || (!hasExplicitPrimary && idx === 0 && plannedExams.length > 1 && tl.timeframe !== 'unknown')) {
+      if (tl.isPrimary) {
+        weight += 0.75;
+        factors.push('kỳ thi ưu tiên chính');
+      }
+    }
+
+    const uBoost = urgencyBoost[tl.timeframe] || 0;
+    weight += uBoost;
+    if (tl.timeframe !== 'unknown') {
+      factors.push(`còn ${tl.timeframe}`);
+    }
+
+    const normScore = getExamNormalizedScore(profile, exam);
+    if (normScore === null) {
+      weight += 0.2;
+      factors.push('chưa có điểm nền (cần test chẩn đoán)');
+    } else if (normScore < 0.65) {
+      weight += 0.4;
+      factors.push('cần kéo điểm nền');
+    }
+
+    return {
+      exam,
+      tl,
+      weight,
+      factors
+    };
+  });
+
+  const totalWeight = scored.reduce((acc, s) => acc + s.weight, 0) || 1;
+  const budgetTenths = Math.max(0, Math.round(examBudgetHours * 10));
+
+  // Floor each exam to tenths first so sum NEVER exceeds budgetTenths
+  const rawTenths = scored.map(s => {
+    const exact = (budgetTenths * s.weight) / totalWeight;
+    const floored = Math.floor(exact);
+    return {
+      ...s,
+      tenths: floored,
+      remainder: exact - floored
+    };
+  });
+
+  let usedTenths = rawTenths.reduce((acc, r) => acc + r.tenths, 0);
+  let remainingTenths = budgetTenths - usedTenths;
+
+  // Distribute leftover 0.1h increments to highest priority/remainder items
+  const sortedForRemainder = [...rawTenths].sort(
+    (a, b) => (b.tl.isPrimary ? 1 : 0) - (a.tl.isPrimary ? 1 : 0) || b.remainder - a.remainder || b.weight - a.weight
+  );
+  let ptr = 0;
+  while (remainingTenths > 0 && sortedForRemainder.length > 0) {
+    sortedForRemainder[ptr % sortedForRemainder.length].tenths += 1;
+    remainingTenths -= 1;
+    ptr += 1;
+  }
+
+  const avgHoursPerExam = examBudgetHours / plannedExams.length;
+  const isTightBudget = plannedExams.length > 1 && avgHoursPerExam < 1.5;
+
+  const sortedByWeight = [...rawTenths].sort((a, b) => b.weight - a.weight);
+  const topPriorityExam = sortedByWeight[0]?.exam;
+
+  const tradeoffWarning = isTightBudget
+    ? `Quỹ thời gian ôn thi (${examBudgetHours} giờ/tuần cho ${plannedExams.length} kỳ thi) khá hạn chế (~${Math.round(avgHoursPerExam * 10) / 10}h/kỳ thi). Hệ thống ưu tiên dồn thời lượng cho ${topPriorityExam} theo độ gấp và mức độ ưu tiên; bạn nên cân nhắc giảm số kỳ thi dàn trải hoặc tăng giờ tự học.`
+    : undefined;
+
+  const allocations: ExamAllocationSummary[] = rawTenths.map(item => {
+    const hours = Math.round(item.tenths) / 10;
+    const reasonText =
+      item.factors.length > 0 ? item.factors.join(', ') : 'phân bổ cân đối theo quỹ thời gian thực tế';
+    return {
+      exam: item.exam,
+      hours,
+      timeframe: item.tl.timeframe,
+      targetDate: item.tl.targetDate,
+      isPrimary: item.tl.isPrimary,
+      rationale: `Phân bổ ${hours}h/tuần (${reasonText}).`
+    };
+  });
+
+  return { allocations, tradeoffWarning };
 }
 
 /**
@@ -254,13 +495,16 @@ function buildMilestoneStepsForSkills(
 
 /**
  * Generates grounded 6-field StudyTaskItem entries for Grade 12 selected exams ONLY.
- * Strictly avoids fabricating weak topics or assuming unselected exams.
+ * Strictly separates THPT graduation subjects (Circular 24/2024) from admission combo,
+ * respects allocated weekly budget, and uses each exam's individual timeline.
  */
 function buildExamStudyTasks(
   profile: UserProfile,
   plannedExams: PlannedExamCode[],
   examHoursPerWeek: number,
-  isSprintPhase: boolean
+  perExamTimelines: Record<PlannedExamCode, ResolvedExamTimeline>,
+  allocations: ExamAllocationSummary[],
+  tradeoffWarning?: string
 ): StudyTaskItem[] {
   const weakTopics = (profile.examScores?.weakTopics || []).map(w => w.trim()).filter(Boolean);
   const hasTopicDiagnostic = weakTopics.length > 0;
@@ -274,45 +518,96 @@ function buildExamStudyTasks(
           ? `Chuyên đề học sinh đã ghi nhận cần cải thiện: ${weakTopics.join(', ')}`
           : 'Chưa có dữ liệu kỳ thi dự định và chuyên đề yếu — Cần xác nhận trước khi lập lịch ôn chi tiết',
         hasTopicDiagnostic,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
         specificGoal:
           'Xác nhận chính xác các kỳ thi thực tế sẽ tham gia (THPT, HSA, V-ACT, TSA) và làm bài kiểm tra đầu vào để xác định mặt bằng điểm.',
         studyMethod:
           'Chọn danh sách kỳ thi dự định, làm 1 đề tham khảo bấm giờ nghiêm túc cho từng kỳ thi đã chọn và thống kê các câu sai.',
-        estimatedDuration: `${Math.max(2, Math.round(examHoursPerWeek))} giờ (tuần đầu xác nhận)`,
+        estimatedDuration: `${Math.round(examHoursPerWeek * 10) / 10} giờ/tuần`,
+        allocatedHours: Math.round(examHoursPerWeek * 10) / 10,
+        priority: 'High',
         verificationMethod:
           'Có danh sách kỳ thi đã chốt và bảng điểm chẩn đoán ban đầu kèm danh sách chuyên đề sai sót.'
       }
     ];
   }
 
-  const perExamHours = Math.max(2, Math.round((examHoursPerWeek / plannedExams.length) * 10) / 10);
+  const gradSubjects = resolveThptGraduationSubjects(profile);
+  const admissionCombo = getAdmissionComboLabel(profile);
   const tasks: StudyTaskItem[] = [];
 
-  for (const exam of plannedExams) {
+  for (const alloc of allocations) {
+    const exam = alloc.exam;
+    const isSprintExam = alloc.timeframe === '< 1 tháng' || alloc.timeframe === '1–3 tháng';
+    const timeframeSuffix =
+      alloc.timeframe !== 'unknown'
+        ? ` (Còn ${alloc.timeframe}${alloc.targetDate ? ` · Mốc: ${alloc.targetDate}` : ''})`
+        : alloc.targetDate
+        ? ` (Mốc dự kiến: ${alloc.targetDate})`
+        : '';
+    const priority: 'High' | 'Medium' | 'Low' =
+      alloc.isPrimary || alloc.timeframe === '< 1 tháng' || alloc.hours >= examHoursPerWeek * 0.4
+        ? 'High'
+        : alloc.hours >= 1.5
+        ? 'Medium'
+        : 'Low';
+
+    const budgetNote =
+      alloc.hours < 1.5 && tradeoffWarning
+        ? `Quỹ giờ hẹp (${alloc.hours}h/tuần): ưu tiên làm câu hỏi trọng tâm / dạng bài hay mất điểm nhất.`
+        : undefined;
+
     if (exam === 'THPT') {
-      const subjectsStr = parseThptComboSubjects(profile.examScores?.thptCombo);
       const hasThptScore = typeof profile.examScores?.thptScore === 'number';
+      const thptTitle = gradSubjects.isComplete
+        ? `Kỳ thi Tốt nghiệp THPT (Thông tư 24/2024): ${gradSubjects.displayLabel}`
+        : `Kỳ thi Tốt nghiệp THPT — ${gradSubjects.displayLabel}`;
+      const comboContextNote =
+        profile.examScores?.thptAdmissionCombo || profile.examScores?.thptCombo
+          ? ` (Xét tuyển ĐH theo tổ hợp ${admissionCombo} — lưu ý tách biệt với đủ 4 môn thi tốt nghiệp)`
+          : '';
+
       tasks.push({
-        subjectOrCompetency: `Kỳ thi THPT QG — ${subjectsStr}`,
-        topicFocus: hasTopicDiagnostic
-          ? `Ưu tiên chuyên đề học sinh khai báo cần cải thiện (${weakTopics.join(', ')}) trong ${subjectsStr}`
-          : 'Chưa có dữ liệu chuyên đề yếu cụ thể — Làm 1 đề khảo sát tổng hợp để khoanh vùng dạng bài hay sai',
+        examCode: 'THPT',
+        allocatedHours: alloc.hours,
+        priority,
+        examTimeframe: alloc.timeframe,
+        targetExamDate: alloc.targetDate,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
+        allocationTradeoffNote: budgetNote,
+        subjectOrCompetency: `${thptTitle}${timeframeSuffix}`,
+        topicFocus: !gradSubjects.isComplete
+          ? `Chưa chọn đủ 2 môn tự chọn thi tốt nghiệp THPT (hiện có: ${gradSubjects.displayLabel}).${hasTopicDiagnostic ? ` Chuyên đề yếu đã khai báo: ${weakTopics.join(', ')}.` : ''}`
+          : hasTopicDiagnostic
+          ? `Ưu tiên chuyên đề học sinh khai báo cần cải thiện (${weakTopics.join(', ')}) trong 4 môn thi (${gradSubjects.allSubjects.join(', ')})`
+          : `Chưa có dữ liệu chuyên đề yếu cụ thể — Làm đề khảo sát cho ${gradSubjects.allSubjects.join(', ')} để khoanh vùng dạng bài hay sai`,
         hasTopicDiagnostic,
-        specificGoal: hasThptScore
-          ? `Cải thiện từ mốc ${profile.examScores?.thptScore}/30 hiện tại${studyGoal ? ` hướng tới mục tiêu: ${studyGoal}` : ', giảm lỗi sai ở câu vận dụng'}.`
-          : `Thiết lập điểm nền thực tế cho ${subjectsStr}${studyGoal ? ` và bám sát mục tiêu: ${studyGoal}` : ', nắm vững 70–80% câu hỏi nhận biết – thông hiểu trước khi tăng tốc vận dụng'}.`,
-        studyMethod: isSprintPhase
-          ? 'Luyện đề chuẩn thời gian thực, lập sổ theo dõi lỗi sai theo dạng bài và ôn lại phần kiến thức mất điểm ngay sau mỗi đề.'
-          : 'Hệ thống hóa kiến thức trọng tâm từng chương, kết hợp luyện đề từng phần và ghi chú các lỗi tính toán/đọc đề.',
-        estimatedDuration: `${perExamHours} giờ/tuần`,
-        verificationMethod: hasThptScore
-          ? 'Hoàn thành 1–2 đề thi thử/tuần, đối chiếu đáp án và kiểm tra tỷ lệ lỗi lặp lại giảm dần qua từng tuần.'
-          : 'Hoàn thành bài thi thử chẩn đoán đầu tiên để có điểm nền và lập danh sách chuyên đề cần vá.'
+        specificGoal: !gradSubjects.isComplete
+          ? `Chốt đủ 2 môn tự chọn bên cạnh Toán học & Ngữ văn theo quy chế tốt nghiệp THPT 2025+${comboContextNote}.`
+          : hasThptScore
+          ? `Cải thiện từ mốc ${profile.examScores?.thptScore}/30 hiện tại${studyGoal ? ` hướng tới mục tiêu: ${studyGoal}` : ', giảm lỗi sai ở câu vận dụng'}${comboContextNote}.`
+          : `Thiết lập điểm nền thực tế cho 4 môn thi tốt nghiệp THPT (${gradSubjects.allSubjects.join(', ')})${studyGoal ? ` và bám sát mục tiêu: ${studyGoal}` : ''}${comboContextNote}.`,
+        studyMethod: isSprintExam
+          ? 'Luyện đề chuẩn thời gian thực cho các môn tốt nghiệp, lập sổ theo dõi lỗi sai theo dạng bài và ôn lại phần kiến thức mất điểm ngay sau mỗi đề.'
+          : 'Hệ thống hóa kiến thức trọng tâm từng chương theo cấu trúc đề minh họa Bộ GD&ĐT, phân biệt rạch ròi 2 môn bắt buộc và 2 môn tự chọn.',
+        estimatedDuration: `${alloc.hours} giờ/tuần`,
+        verificationMethod: !gradSubjects.isComplete
+          ? 'Hoàn tất chọn đủ 2 môn tự chọn tốt nghiệp THPT và hoàn thành bài test chẩn đoán đầu vào.'
+          : hasThptScore
+          ? 'Hoàn thành đề thi thử bấm giờ, đối chiếu đáp án và kiểm tra tỷ lệ lỗi lặp lại giảm dần qua từng tuần.'
+          : 'Hoàn thành bài thi thử chẩn đoán đầu tiên cho đủ 4 môn thi để có điểm nền thực tế.'
       });
     } else if (exam === 'HSA') {
       const hasHsa = typeof profile.examScores?.hsaScore === 'number';
       tasks.push({
-        subjectOrCompetency: 'Kỳ thi ĐGNL ĐHQG Hà Nội (HSA)',
+        examCode: 'HSA',
+        allocatedHours: alloc.hours,
+        priority,
+        examTimeframe: alloc.timeframe,
+        targetExamDate: alloc.targetDate,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
+        allocationTradeoffNote: budgetNote,
+        subjectOrCompetency: `Kỳ thi ĐGNL ĐHQG Hà Nội (HSA)${timeframeSuffix}`,
         topicFocus: hasTopicDiagnostic
           ? `Tập trung các nội dung liên quan tới: ${weakTopics.join(', ')} trong cấu trúc Định lượng / Định tính / Khoa học`
           : 'Chưa có dữ liệu chuyên đề yếu từng phần của HSA — Cần làm 1 đề mẫu đánh giá năng lực để xác định phần hụt điểm',
@@ -320,10 +615,10 @@ function buildExamStudyTasks(
         specificGoal: hasHsa
           ? `Nâng cao độ chính xác và tốc độ xử lý bài thi từ mốc ${profile.examScores?.hsaScore}/150 hiện có.`
           : 'Xác định điểm nền HSA thực tế và làm quen áp lực thời gian giữa 3 phần thi Định lượng, Định tính và Khoa học/Tiếng Anh.',
-        studyMethod: isSprintPhase
+        studyMethod: isSprintExam
           ? 'Luyện đề bấm giờ trên máy tính mô phỏng cấu trúc HSA, rà soát kỹ các câu đọc hiểu dài và xử lý số liệu.'
           : 'Ôn chắc tư duy toán định lượng, kỹ năng đọc hiểu văn bản nhanh và phản xạ xử lý câu hỏi khoa học tổng hợp.',
-        estimatedDuration: `${perExamHours} giờ/tuần`,
+        estimatedDuration: `${alloc.hours} giờ/tuần`,
         verificationMethod: hasHsa
           ? 'Ghi lại điểm từng phần sau mỗi lần thi thử để kiểm tra phần yếu nhất có tiến triển.'
           : 'Hoàn thành 1 bài thi thử HSA chuẩn cấu trúc và phân tách điểm theo từng hợp phần.'
@@ -331,7 +626,14 @@ function buildExamStudyTasks(
     } else if (exam === 'V-ACT') {
       const hasVact = typeof profile.examScores?.vactScore === 'number';
       tasks.push({
-        subjectOrCompetency: 'Kỳ thi ĐGNL ĐHQG TP.HCM (V-ACT)',
+        examCode: 'V-ACT',
+        allocatedHours: alloc.hours,
+        priority,
+        examTimeframe: alloc.timeframe,
+        targetExamDate: alloc.targetDate,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
+        allocationTradeoffNote: budgetNote,
+        subjectOrCompetency: `Kỳ thi ĐGNL ĐHQG TP.HCM (V-ACT)${timeframeSuffix}`,
         topicFocus: hasTopicDiagnostic
           ? `Ưu tiên phần kiến thức cần củng cố: ${weakTopics.join(', ')} trong cấu trúc Ngôn ngữ / Logic / Giải quyết vấn đề`
           : 'Chưa có dữ liệu điểm thành phần V-ACT — Thực hiện đề thi thử để xác định phần cần bù đắp giữa Ngôn ngữ, Toán-Logic và Khoa học',
@@ -339,10 +641,10 @@ function buildExamStudyTasks(
         specificGoal: hasVact
           ? `Tối ưu khả năng xử lý câu hỏi đọc hiểu và phân tích số liệu từ mức ${profile.examScores?.vactScore}/1200.`
           : 'Đo điểm nền V-ACT hiện tại và làm quen với tốc độ đọc – suy luận 120 câu trắc nghiệm.',
-        studyMethod: isSprintPhase
+        studyMethod: isSprintExam
           ? 'Luyện đề trọn vẹn 150 phút để rèn sức bền tập trung, phân tích nguyên nhân sai (thiếu kiến thức hay thiếu thời gian).'
           : 'Rèn kỹ năng đọc hiểu Tiếng Việt – Tiếng Anh, suy luận logic biểu đồ và hệ thống kiến thức giải quyết vấn đề.',
-        estimatedDuration: `${perExamHours} giờ/tuần`,
+        estimatedDuration: `${alloc.hours} giờ/tuần`,
         verificationMethod: hasVact
           ? 'Theo dõi số câu đúng trên tổng thời gian làm bài ở mỗi lần luyện đề.'
           : 'Có kết quả bài thi thử V-ACT đầu tiên và phân loại được nhóm câu hỏi sai.'
@@ -350,7 +652,14 @@ function buildExamStudyTasks(
     } else if (exam === 'TSA') {
       const hasTsa = typeof profile.examScores?.tsaScore === 'number';
       tasks.push({
-        subjectOrCompetency: 'Kỳ thi ĐGTD ĐH Bách Khoa Hà Nội (TSA)',
+        examCode: 'TSA',
+        allocatedHours: alloc.hours,
+        priority,
+        examTimeframe: alloc.timeframe,
+        targetExamDate: alloc.targetDate,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
+        allocationTradeoffNote: budgetNote,
+        subjectOrCompetency: `Kỳ thi ĐGTD ĐH Bách Khoa Hà Nội (TSA)${timeframeSuffix}`,
         topicFocus: hasTopicDiagnostic
           ? `Gắn với chuyên đề học sinh cần cải thiện: ${weakTopics.join(', ')} ở phần Tư duy Toán học / Đọc hiểu / Khoa học`
           : 'Chưa có dữ liệu chuyên đề yếu TSA — Cần làm đề minh họa TSA để kiểm tra khả năng đọc hiểu khoa học và suy luận toán học',
@@ -358,10 +667,10 @@ function buildExamStudyTasks(
         specificGoal: hasTsa
           ? `Cải thiện độ chính xác suy luận logic và đọc hiểu kỹ thuật từ mốc ${profile.examScores?.tsaScore}/100.`
           : 'Xác định mức điểm nền TSA và rèn phản xạ giải quyết câu hỏi suy luận không học thuộc lòng.',
-        studyMethod: isSprintPhase
+        studyMethod: isSprintExam
           ? 'Thực hành đề thi TSA trên máy, phân tích kỹ câu hỏi đọc hiểu biểu đồ – thí nghiệm và tối ưu phân bổ thời gian từng phần.'
           : 'Rèn tư duy toán học, kỹ năng phân tích văn bản khoa học – công nghệ và suy luận dựa trên dữ kiện cho sẵn.',
-        estimatedDuration: `${perExamHours} giờ/tuần`,
+        estimatedDuration: `${alloc.hours} giờ/tuần`,
         verificationMethod: hasTsa
           ? 'Đối chiếu tỷ lệ làm đúng các dạng câu kéo thả, đúng/sai và trắc nghiệm suy luận qua từng đề luyện.'
           : 'Hoàn thành 1 bài thi thử TSA có bấm giờ để xác định mặt bằng điểm thực tế.'
@@ -370,6 +679,75 @@ function buildExamStudyTasks(
   }
 
   return tasks;
+}
+
+/**
+ * Fallback confirmation roadmap when ageGroup is 15-18 but profile.grade was NOT explicitly set.
+ * Prevents silently guessing Grade 10/11/12 from age alone.
+ */
+function buildUnconfirmedHighSchoolRoadmap(
+  profile: UserProfile,
+  career: Career,
+  hoursPerWeek: number,
+  suggestedGrade: '10' | '11' | '12'
+): LearningRoadmap {
+  const studentName = profile.name?.trim() || 'Học sinh';
+  return {
+    careerId: career.id,
+    careerTitle: career.title,
+    targetAgeGroup: '15-18',
+    stageLabel: 'THPT (15–18 tuổi) — Cần xác nhận chính xác Khối lớp (Lớp 10 / 11 / 12)',
+    gradeDetected: 'Chưa xác nhận khối lớp',
+    suggestedGrade: `Lớp ${suggestedGrade}`,
+    needsGradeConfirmation: true,
+    needsExamConfirmation: true,
+    isTimelineEstimated: true,
+    plannedExams: [],
+    source: 'engine',
+    allocation: {
+      examRatio: 50,
+      skillRatio: 50,
+      examHoursPerWeek: Math.round((hoursPerWeek * 50) / 100 * 10) / 10,
+      skillHoursPerWeek: Math.round((hoursPerWeek * 50) / 100 * 10) / 10,
+      totalHoursPerWeek: hoursPerWeek,
+      isDefault: true,
+      rationale:
+        `Hồ sơ hiện chỉ có tuổi (${profile.age || 'chưa rõ'}) mà chưa có khối lớp cụ thể. Hệ thống KHÔNG tự ý gán Lớp ${suggestedGrade} từ tuổi để tránh lệch lộ trình ôn thi Lớp 12 vs Lớp 10/11.`
+    },
+    phases: [
+      {
+        phaseNumber: 1,
+        name: 'Bước 0: Xác nhận Khối lớp & Kế hoạch Kỳ thi Thực tế',
+        duration: 'Xác nhận ngay trước khi lập lịch',
+        timeframe: 'Chờ xác nhận hồ sơ',
+        stageCategory: 'highschool-prep',
+        objectives: [
+          `Xác nhận chính xác bạn đang học Lớp 10, Lớp 11 hay Lớp 12 (tuổi ${profile.age || '15–18'} chỉ mang tính gợi ý Lớp ${suggestedGrade})`,
+          'Nếu học Lớp 12, chốt danh sách kỳ thi tham gia (THPT, HSA, V-ACT, TSA), 2 môn tự chọn tốt nghiệp THPT và thời gian còn lại tới từng kỳ thi'
+        ],
+        skillsToLearn: ['Phương pháp tự học', 'Lập kế hoạch học tập theo mục tiêu'],
+        foundationalSkills: ['Phương pháp tự học', 'Quản lý thời gian'],
+        specializedSkills: [],
+        studyTasks: [
+          {
+            subjectOrCompetency: 'Xác nhận khối lớp hiện tại (Lớp 10 / 11 / 12)',
+            topicFocus: 'Thông tin khối lớp hiện đang trống — Cần người học tự xác nhận',
+            hasTopicDiagnostic: false,
+            specificGoal: 'Chọn đúng khối lớp đang học để kích hoạt cấu trúc lộ trình phù hợp (ôn thi ưu tiên cho Lớp 12 hoặc xây nền cho Lớp 10–11).',
+            studyMethod: 'Cập nhật mục Khối lớp ở Hồ sơ hoặc chọn nhanh ngay trong bảng điều khiển Lộ trình.',
+            estimatedDuration: `${Math.min(hoursPerWeek, 2)} giờ (rà soát kế hoạch)`,
+            verificationMethod: 'Đã lưu chính xác khối lớp và thấy lộ trình chuyên biệt cho khối lớp đó.'
+          }
+        ],
+        projects: [`Rà soát môn học thế mạnh và mức độ quan tâm với ngành ${career.title}`],
+        recommendedActivities: [
+          'Kiểm tra lại danh sách kỳ thi dự định tham gia và tổ hợp xét tuyển đại học (nếu định hướng Đại học)'
+        ],
+        milestone: 'Xác nhận xong khối lớp thực tế để mở khóa lộ trình chi tiết.'
+      }
+    ],
+    tailoredNote: `Chào ${studentName}, hồ sơ của bạn chưa xác nhận rõ đang học Lớp 10, Lớp 11 hay Lớp 12 (hệ thống không tự suy đoán từ tuổi ${profile.age || '15–18'} để tránh sai lộ trình thi cử). Vui lòng xác nhận khối lớp để nhận phân bổ ${hoursPerWeek} giờ/tuần chính xác nhất.`
+  };
 }
 
 /**
@@ -387,13 +765,41 @@ function buildGrade12Roadmap(
   const plannedExams: PlannedExamCode[] = (profile.examScores?.plannedExams || []).filter(
     (e): e is PlannedExamCode => ['THPT', 'HSA', 'V-ACT', 'TSA'].includes(e)
   );
-  const timeUntilExam: ExamTimeframe = profile.examScores?.timeUntilExam || 'unknown';
+  const timelines = resolveExamTimelines(profile, plannedExams);
+  const timeUntilExam: ExamTimeframe = timelines.overallTimeframe;
   const needsExamConfirmation = plannedExams.length === 0;
-  const isTimelineEstimated = timeUntilExam === 'unknown';
+  const isTimelineEstimated = !timelines.hasAnyConcreteTimeline;
 
-  const allocation = computeGrade12Allocation(profile, plannedExams, timeUntilExam, hoursPerWeek);
-  const examHours = Math.max(1, Math.round((hoursPerWeek * allocation.examRatio) / 100 * 10) / 10);
-  const skillHours = Math.max(0.5, Math.round((hoursPerWeek * allocation.skillRatio) / 100 * 10) / 10);
+  const gradSubjects = resolveThptGraduationSubjects(profile);
+  const needsGraduationSubjectsConfirmation =
+    plannedExams.includes('THPT') && !gradSubjects.isComplete;
+
+  const baseAllocation = computeGrade12Allocation(profile, plannedExams, timeUntilExam, hoursPerWeek);
+
+  // Strict mathematical budget enforcement (NO Math.max floor exceeding hoursPerWeek)
+  const examHours = Math.min(
+    hoursPerWeek,
+    Math.round(((hoursPerWeek * baseAllocation.examRatio) / 100) * 10) / 10
+  );
+  const skillHours = Math.max(0, Math.round((hoursPerWeek - examHours) * 10) / 10);
+
+  const { allocations: examAllocations, tradeoffWarning } = allocateExamWeeklyHours(
+    profile,
+    plannedExams,
+    examHours,
+    timelines.perExam
+  );
+
+  const allocation: NonNullable<LearningRoadmap['allocation']> = {
+    ...baseAllocation,
+    examHoursPerWeek: examHours,
+    skillHoursPerWeek: skillHours,
+    totalHoursPerWeek: hoursPerWeek,
+    tradeoffWarning,
+    rationale: tradeoffWarning
+      ? `${baseAllocation.rationale} ${tradeoffWarning}`
+      : baseAllocation.rationale
+  };
 
   // Strict foundational skills ONLY during Pre-exam (NO React/frameworks/capstone/university domain overload)
   const foundationalSkillList = [
@@ -435,22 +841,40 @@ function buildGrade12Roadmap(
   const examsLabel =
     plannedExams.length > 0 ? plannedExams.join(', ') : 'Chưa xác nhận kỳ thi cụ thể';
 
+  const appendFoundationalSkillTask = (list: StudyTaskItem[]) => {
+    if (skillHours <= 0) return;
+    list.push({
+      subjectOrCompetency: 'Kỹ năng nền tảng phục vụ thi cử',
+      topicFocus: 'Kỷ luật phòng thi, đọc hiểu nhanh và giữ nhịp độ ôn tập ổn định',
+      hasTopicDiagnostic: true,
+      allocatedHours: skillHours,
+      priority: 'Medium',
+      specificGoal: `Duy trì đúng ${skillHours} giờ/tuần (${allocation.skillRatio}% quỹ thời gian) cho kỹ năng học tập, ngoại ngữ đọc hiểu và nghỉ ngơi hợp lý.`,
+      studyMethod: 'Rèn kỹ năng đọc lướt đề, quản lý đồng hồ làm bài và ôn từ khóa ngoại ngữ nhẹ nhàng (không học kỹ năng chuyên ngành nặng).',
+      estimatedDuration: `${skillHours} giờ/tuần`,
+      verificationMethod: 'Hoàn thành các buổi luyện đề đúng thời gian quy định và duy trì tổng thời lượng học không vượt quỹ tuần.'
+    });
+  };
+
   if (isShortSprint) {
     const durationLabel =
       timeUntilExam === '< 1 tháng'
         ? 'Trước kỳ thi (< 1 tháng cuối)'
         : 'Trước kỳ thi (1–3 tháng cuối)';
 
-    const sprintTasks = buildExamStudyTasks(profile, plannedExams, examHours, true);
-    sprintTasks.push({
-      subjectOrCompetency: 'Kỹ năng nền tảng phục vụ thi cử',
-      topicFocus: 'Kỹ luật phòng thi, phân bổ thời gian và giữ nhịp độ ôn tập ổn định',
-      hasTopicDiagnostic: true,
-      specificGoal: `Duy trì ${skillHours} giờ/tuần (${allocation.skillRatio}% quỹ thời gian) cho kỹ năng học tập, ngoại ngữ đọc hiểu và nghỉ ngơi hợp lý.`,
-      studyMethod: 'Rèn kỹ năng đọc lướt đề, quản lý đồng hồ làm bài và ôn từ khóa ngoại ngữ nhẹ nhàng (không học kỹ năng chuyên ngành nặng).',
-      estimatedDuration: `${skillHours} giờ/tuần`,
-      verificationMethod: 'Hoàn thành các buổi luyện đề đúng thời gian quy định và duy trì sức khỏe ổn định.'
-    });
+    const sprintTasks = buildExamStudyTasks(
+      profile,
+      plannedExams,
+      examHours,
+      timelines.perExam,
+      examAllocations,
+      tradeoffWarning
+    );
+    appendFoundationalSkillTask(sprintTasks);
+
+    const timelineSummaryParts = examAllocations.map(
+      a => `${a.exam}: ${a.hours}h/tuần (${a.timeframe === 'unknown' ? 'chưa rõ mốc' : a.timeframe})`
+    );
 
     phases.push({
       phaseNumber: 1,
@@ -462,7 +886,7 @@ function buildGrade12Roadmap(
       objectives: [
         needsExamConfirmation
           ? 'Xác nhận ngay các kỳ thi thực tế sẽ tham gia (THPT / HSA / V-ACT / TSA) và làm đề khảo sát đầu vào'
-          : `Tập trung ${allocation.examRatio}% thời lượng (${examHours} giờ/tuần) ôn tập, luyện đề và phân tích lỗi sai cho: ${examsLabel}`,
+          : `Tập trung ${allocation.examRatio}% thời lượng (${examHours}/${hoursPerWeek} giờ/tuần) ôn tập và phân tích lỗi sai: ${timelineSummaryParts.join(' · ')}`,
         `Phân bổ ${allocation.skillRatio}% thời lượng (${skillHours} giờ/tuần) cho kỹ năng nền tảng (quản lý thời gian, đọc hiểu, tư duy logic) — KHÔNG đưa kiến thức chuyên ngành nặng vào giai đoạn nước rút`
       ],
       skillsToLearn: foundationalSkillList.slice(0, 3),
@@ -489,7 +913,7 @@ function buildGrade12Roadmap(
         ? 'Trước kỳ thi — Chặng 1 (Khoảng 3–5 tháng đầu)'
         : timeUntilExam === '> 9 tháng'
         ? 'Trước kỳ thi — Chặng 1 (Nửa đầu năm học)'
-        : 'Trước kỳ thi — Chặng 1 (Ước lượng — Chưa xác định ngày thi)';
+        : 'Trước kỳ thi — Chặng 1 (Ước lượng — Chưa xác định mốc thời gian)';
 
     const preDuration2 =
       timeUntilExam === '3–6 tháng'
@@ -500,18 +924,28 @@ function buildGrade12Roadmap(
         ? 'Trước kỳ thi — Chặng 2 (Chặng tăng tốc trước kỳ thi)'
         : 'Trước kỳ thi — Chặng 2 (Nước rút — Tùy thuộc thời điểm thi thực tế)';
 
-    const ch1Tasks = buildExamStudyTasks(profile, plannedExams, examHours, false);
-    ch1Tasks.push({
-      subjectOrCompetency: 'Kỹ năng nền tảng & Định hướng nhẹ',
-      topicFocus: 'Tư duy logic, thói quen tự học và tiếng Anh học thuật',
-      hasTopicDiagnostic: true,
-      specificGoal: `Duy trì ${skillHours} giờ/tuần (${allocation.skillRatio}% quỹ thời gian) củng cố kỹ năng học tập và đọc tài liệu cơ bản.`,
-      studyMethod: 'Ghi chép chủ động (Cornell/Mindmap), rèn từ vựng tiếng Anh đọc hiểu và tìm hiểu sơ lược cấu trúc ngành học ở mức định hướng.',
-      estimatedDuration: `${skillHours} giờ/tuần`,
-      verificationMethod: 'Duy trì đều lịch tự học hàng tuần mà không ảnh hưởng tới điểm trên lớp.'
-    });
+    const ch1Tasks = buildExamStudyTasks(
+      profile,
+      plannedExams,
+      examHours,
+      timelines.perExam,
+      examAllocations,
+      tradeoffWarning
+    );
+    appendFoundationalSkillTask(ch1Tasks);
 
-    const ch2Tasks = buildExamStudyTasks(profile, plannedExams, examHours, true);
+    const ch2Tasks = buildExamStudyTasks(
+      profile,
+      plannedExams,
+      examHours,
+      timelines.perExam,
+      examAllocations,
+      tradeoffWarning
+    );
+
+    const perExamTimelineText = examAllocations
+      .map(a => `${a.exam} (${a.hours}h/tuần, ${a.timeframe === 'unknown' ? 'chưa rõ ngày' : `còn ${a.timeframe}`})`)
+      .join('; ');
 
     phases.push({
       phaseNumber: 1,
@@ -523,7 +957,7 @@ function buildGrade12Roadmap(
       objectives: [
         needsExamConfirmation
           ? 'Xác nhận chính xác các kỳ thi dự định tham gia trước khi phân chia giờ ôn chi tiết'
-          : `Ưu tiên ${allocation.examRatio}% quỹ tự học (${examHours}h/tuần) củng cố kiến thức trọng tâm cho: ${examsLabel}`,
+          : `Ưu tiên ${allocation.examRatio}% quỹ tự học (${examHours}/${hoursPerWeek}h/tuần): ${perExamTimelineText}`,
         `Duy trì ${allocation.skillRatio}% (${skillHours}h/tuần) rèn kỹ năng học tập nền tảng, tư duy logic và ngoại ngữ học thuật`
       ],
       skillsToLearn: foundationalSkillList,
@@ -547,7 +981,9 @@ function buildGrade12Roadmap(
       stageCategory: 'pre-exam',
       examFocus: plannedExams,
       objectives: [
-        `Tăng cường luyện đề theo đúng cấu trúc của ${plannedExams.length > 0 ? examsLabel : 'các kỳ thi đã xác nhận'}`,
+        timelines.hasDistinctTimelines
+          ? 'Điều chỉnh trọng tâm luyện đề linh hoạt theo mốc từng kỳ thi (ưu tiên kỳ thi diễn ra sớm trước, sau đó dồn lực cho kỳ thi tiếp theo)'
+          : `Tăng cường luyện đề theo đúng cấu trúc của ${plannedExams.length > 0 ? examsLabel : 'các kỳ thi đã xác nhận'}`,
         'Phân tích lỗi sai theo từng dạng bài, tối ưu tốc độ xử lý và giữ ổn định tâm lý phòng thi'
       ],
       skillsToLearn: ['Phân tích lỗi sai khi làm đề', 'Quản lý thời gian phòng thi'],
@@ -566,6 +1002,8 @@ function buildGrade12Roadmap(
   // POST-EXAM PHASE (Always separated cleanly after exams)
   const postPhaseNum = phases.length + 1;
   const postSteps = buildMilestoneStepsForSkills(fallbackSpecialized, career, 'foundation');
+  const postSkillHours = Math.round(hoursPerWeek * 0.7 * 10) / 10;
+  const postTransitionHours = Math.max(0, Math.round((hoursPerWeek - postSkillHours) * 10) / 10);
   const postTasks: StudyTaskItem[] = [
     {
       subjectOrCompetency: `Chuẩn bị chuyên ngành ${career.title}`,
@@ -574,18 +1012,22 @@ function buildGrade12Roadmap(
           ? `Bù đắp khoảng trống kỹ năng từ Skill Gap: ${specializedSkillNames.join(', ')}`
           : `Kiến thức nhập môn ngành ${career.title}`,
       hasTopicDiagnostic: true,
+      allocatedHours: postSkillHours,
+      priority: 'High',
       specificGoal: `Bắt đầu làm quen bài bản các kỹ năng chuyên ngành cho ${career.title} ngay sau khi hoàn tất thi cử.`,
       studyMethod: 'Học qua tài liệu nhập môn chính thống kết hợp làm 1 dự án nhỏ thực hành cá nhân.',
-      estimatedDuration: `${hoursPerWeek} giờ/tuần (sau kỳ thi)`,
+      estimatedDuration: `${postSkillHours} giờ/tuần (sau kỳ thi)`,
       verificationMethod: 'Hoàn thành ít nhất 1 sản phẩm/bài tập thực hành đầu tay trước khi nhập học.'
     },
     {
       subjectOrCompetency: 'Chuyển tiếp môi trường Đại học / Đào tạo nghề',
       topicFocus: 'Kỹ năng tự nghiên cứu, làm việc nhóm và lập kế hoạch học tập bậc cao',
       hasTopicDiagnostic: true,
+      allocatedHours: postTransitionHours,
+      priority: 'Medium',
       specificGoal: 'Làm quen chương trình đào tạo năm nhất, câu lạc bộ chuyên môn và phương pháp học chủ động.',
       studyMethod: 'Đọc đề cương học phần nhập môn và kết nối với sinh viên khóa trên / mentor ngành.',
-      estimatedDuration: '3–4 giờ/tuần (sau kỳ thi)',
+      estimatedDuration: `${postTransitionHours} giờ/tuần (sau kỳ thi)`,
       verificationMethod: 'Có lộ trình học tập học kỳ 1 và danh mục công cụ học tập cần thiết.'
     }
   ];
@@ -618,13 +1060,17 @@ function buildGrade12Roadmap(
 
   const timelineNote = isTimelineEstimated
     ? 'Chưa có thông tin cụ thể về thời gian còn lại tới kỳ thi nên mốc thời gian đang để ở mức ước lượng.'
+    : timelines.hasDistinctTimelines
+    ? `Lịch thi có mốc thời gian khác nhau theo từng kỳ thi (${examAllocations.map(a => `${a.exam}: ${a.timeframe}`).join(', ')}).`
     : `Thời gian dự kiến còn ${timeUntilExam} tới kỳ thi mục tiêu.`;
 
   const examConfirmNote = needsExamConfirmation
     ? ' Bạn chưa xác nhận danh sách kỳ thi tham gia (THPT / HSA / V-ACT / TSA) — vui lòng chọn kỳ thi để nhận kế hoạch ôn luyện cụ thể cho từng bài thi.'
+    : needsGraduationSubjectsConfirmation
+    ? ` Lịch ôn tập tập trung vào ${examsLabel}; bạn cần chọn đủ 2 môn tự chọn thi tốt nghiệp THPT (ngoài Toán học & Ngữ văn).`
     : ` Lịch ôn tập chỉ tập trung vào các kỳ thi bạn đã chọn (${examsLabel}).`;
 
-  const tailoredNote = `Lộ trình Lớp 12 cho ${studentName} (${hoursPerWeek} giờ tự học/tuần): Phân bổ ${allocation.examRatio}% ôn thi / ${allocation.skillRatio}% kỹ năng nền tảng ở giai đoạn Trước kỳ thi; sau kỳ thi mới chuyển sang kỹ năng chuyên ngành ${career.title}. ${timelineNote}${examConfirmNote}`;
+  const tailoredNote = `Lộ trình Lớp 12 cho ${studentName} (${hoursPerWeek} giờ tự học/tuần): Phân bổ ${allocation.examRatio}% ôn thi (${examHours}h) / ${allocation.skillRatio}% kỹ năng nền tảng (${skillHours}h) ở giai đoạn Trước kỳ thi; sau kỳ thi mới chuyển sang kỹ năng chuyên ngành ${career.title}. ${timelineNote}${examConfirmNote}`;
 
   return {
     careerId: career.id,
@@ -632,7 +1078,10 @@ function buildGrade12Roadmap(
     targetAgeGroup: '15-18',
     stageLabel: 'Lớp 12 — Lộ trình Theo Mốc Kỳ thi (Trước kỳ thi & Sau kỳ thi)',
     gradeDetected: 'Lớp 12',
+    needsGradeConfirmation: false,
+    needsGraduationSubjectsConfirmation,
     allocation,
+    examAllocations,
     needsExamConfirmation,
     isTimelineEstimated,
     plannedExams,
@@ -659,7 +1108,7 @@ function buildGrade10Or11Roadmap(
   );
   const weakTopics = (profile.examScores?.weakTopics || []).map(w => w.trim()).filter(Boolean);
   const hasTopicDiagnostic = weakTopics.length > 0;
-  const comboStr = parseThptComboSubjects(profile.examScores?.thptCombo);
+  const comboStr = getAdmissionComboLabel(profile);
 
   const isGrade11 = gradeNum === '11';
   const custom = profile.examScores?.customExamRatio;
@@ -670,6 +1119,8 @@ function buildGrade10Or11Roadmap(
       ? 45
       : 30;
   const skillRatio = 100 - examRatio;
+  const examHours = Math.round(((hoursPerWeek * examRatio) / 100) * 10) / 10;
+  const skillHours = Math.max(0, Math.round((hoursPerWeek - examHours) * 10) / 10);
 
   const targetSkills = [...gap.missingSkills.slice(0, 2), ...gap.developingSkills.slice(0, 2)].slice(0, 3);
   const fallbackSkills =
@@ -688,33 +1139,36 @@ function buildGrade10Or11Roadmap(
   const phase1: RoadmapPhase = {
     phaseNumber: 1,
     name: isGrade11
-      ? 'Chặng 1 (Lớp 11): Giữ vững Học lực Tổ hợp & Xây nền Kỹ năng Nghề'
-      : 'Chặng 1 (Lớp 10): Thích nghi THPT, Chọn Tổ hợp & Rèn Thói quen Tự học',
+      ? 'Chặng 1 (Lớp 11): Giữ vững Học lực Nền tảng & Xây nền Kỹ năng Nghề'
+      : 'Chặng 1 (Lớp 10): Thích nghi THPT, Chọn Môn Tự chọn & Rèn Thói quen Tự học',
     duration: isGrade11 ? 'Học kỳ 1 Lớp 11' : 'Học kỳ 1–2 Lớp 10',
     timeframe: isGrade11 ? 'HK1 Lớp 11' : 'Năm học Lớp 10',
     stageCategory: 'highschool-prep',
     examFocus: plannedExams,
     objectives: [
       isGrade11
-        ? `Duy trì học lực ổn định các môn liên quan (${comboStr}) để không bị quá tải khi bước sang Lớp 12`
-        : 'Ổn định phương pháp học bậc THPT và kiểm chứng sự phù hợp giữa tổ hợp môn học với ngành mục tiêu',
-      `Phát triển kỹ năng nền tảng và thử nghiệm nhẹ nhàng với nghề ${career.title}`
+        ? `Duy trì học lực ổn định Toán, Ngữ văn và các môn định hướng (${comboStr}) để không bị quá tải khi bước sang Lớp 12`
+        : 'Ổn định phương pháp học bậc THPT và kiểm chứng sự phù hợp giữa môn tự chọn với ngành mục tiêu',
+      `Phát triển kỹ năng nền tảng (${skillHours}h/tuần) và thử nghiệm nhẹ nhàng với nghề ${career.title}`
     ],
     skillsToLearn: ['Phương pháp tự học bậc THPT', 'Ngoại ngữ nền tảng', ...fallbackSkills.slice(0, 1).map(s => s.skill)],
     foundationalSkills: ['Phương pháp tự học bậc THPT', 'Quản lý thời gian', 'Ngoại ngữ nền tảng'],
     specializedSkills: fallbackSkills.slice(0, 1).map(s => s.skill),
     studyTasks: [
       {
-        subjectOrCompetency: `Các môn học nền tảng (${comboStr})`,
+        subjectOrCompetency: `Các môn học nền tảng trên lớp (Định hướng ĐH: ${comboStr})`,
         topicFocus: hasTopicDiagnostic
           ? `Chuyên đề cần củng cố: ${weakTopics.join(', ')}`
           : 'Chưa có dữ liệu chuyên đề yếu — Theo dõi bài kiểm tra định kỳ trên lớp để ghi nhận phần hổng',
         hasTopicDiagnostic,
+        originalWeakTopics: hasTopicDiagnostic ? weakTopics : undefined,
+        allocatedHours: examHours,
+        priority: 'High',
         specificGoal: isGrade11
           ? 'Nắm chắc kiến thức lớp 11 vì đây là phần giao thoa quan trọng trong các kỳ thi tuyển sinh.'
           : 'Giữ điểm số ổn định các môn thế mạnh và xây thói quen tự học đều đặn.',
         studyMethod: 'Tóm tắt lý thuyết theo sơ đồ sau mỗi chương, làm bài tập từ cơ bản đến khá trước khi thi thử.',
-        estimatedDuration: `${Math.max(2, Math.round((hoursPerWeek * examRatio) / 100))} giờ/tuần`,
+        estimatedDuration: `${examHours} giờ/tuần`,
         verificationMethod: 'Hoàn thành tốt các bài kiểm tra định kỳ trên lớp và không để nợ kiến thức nền.'
       }
     ],
@@ -772,24 +1226,28 @@ function buildGrade10Or11Roadmap(
       ? 'Lớp 11 — Xây nền Kiến thức & Khám phá Chuyên sâu trước Năm cuối'
       : 'Lớp 10 — Khám phá Tổ hợp, Thói quen Tự học & Trải nghiệm Ngành',
     gradeDetected: `Lớp ${gradeNum}`,
+    needsGradeConfirmation: false,
     allocation: {
       examRatio,
       skillRatio,
+      examHoursPerWeek: examHours,
+      skillHoursPerWeek: skillHours,
+      totalHoursPerWeek: hoursPerWeek,
       isDefault: typeof custom !== 'number',
       isUserAdjusted: typeof custom === 'number',
       rationale:
         typeof custom === 'number'
-          ? `Tỷ lệ do học sinh tự điều chỉnh (${examRatio}% học tập/thi cử · ${skillRatio}% kỹ năng & trải nghiệm).`
+          ? `Tỷ lệ do học sinh tự điều chỉnh (${examRatio}% học tập/thi cử = ${examHours}h · ${skillRatio}% kỹ năng & trải nghiệm = ${skillHours}h).`
           : isGrade11
-          ? 'Mức tham chiếu Lớp 11 (45% củng cố học thuật & làm quen thi · 55% phát triển kỹ năng nền tảng và thử nghiệm ngành) trước khi tăng tốc ở Lớp 12.'
-          : 'Mức tham chiếu Lớp 10 (30% học thuật trên lớp · 70% xây thói quen tự học, ngoại ngữ và khám phá nghề nghiệp).'
+          ? `Mức tham chiếu Lớp 11 (45% củng cố học thuật = ${examHours}h · 55% phát triển kỹ năng nền tảng = ${skillHours}h) trước khi tăng tốc ở Lớp 12.`
+          : `Mức tham chiếu Lớp 10 (30% học thuật trên lớp = ${examHours}h · 70% xây thói quen tự học & khám phá = ${skillHours}h).`
     },
     needsExamConfirmation: false,
     isTimelineEstimated: false,
     plannedExams,
     source: 'engine',
     phases: [phase1, phase2],
-    tailoredNote: `Lộ trình Lớp ${gradeNum} cho ${studentName} (${hoursPerWeek}h/tuần): Tập trung cân bằng giữa giữ vững học lực trên lớp (${examRatio}%) và xây dựng kỹ năng, trải nghiệm thực tế cho ngành ${career.title} (${skillRatio}%) trước khi bước vào giai đoạn cao điểm thi cử.`
+    tailoredNote: `Lộ trình Lớp ${gradeNum} cho ${studentName} (${hoursPerWeek}h/tuần): Tập trung cân bằng giữa giữ vững học lực trên lớp (${examRatio}% · ${examHours}h) và xây dựng kỹ năng, trải nghiệm thực tế cho ngành ${career.title} (${skillRatio}% · ${skillHours}h) trước khi bước vào giai đoạn cao điểm thi cử.`
   };
 }
 
@@ -1197,15 +1655,18 @@ export function generateLearningRoadmap(
   externalSkillGap?: SkillGapAnalysis
 ): LearningRoadmap {
   const gap = externalSkillGap || analyzeSkillGap(profile, career);
-  const hoursPerWeek = Math.max(2, Number(profile.availableStudyTimeHoursPerWeek || 10));
+  const hoursPerWeek = Math.max(1, Number(profile.availableStudyTimeHoursPerWeek || 10));
   const normAge = normalizeAgeGroup(profile.ageGroup, profile.age);
 
   if (normAge === '15-18') {
-    const grade = detectHighSchoolGrade(profile);
-    if (grade === '12') {
+    const gradeInfo = detectHighSchoolGrade(profile);
+    if (gradeInfo.needsConfirmation || !gradeInfo.grade) {
+      return buildUnconfirmedHighSchoolRoadmap(profile, career, hoursPerWeek, gradeInfo.suggestedGrade);
+    }
+    if (gradeInfo.grade === '12') {
       return buildGrade12Roadmap(profile, career, gap, hoursPerWeek);
     }
-    return buildGrade10Or11Roadmap(profile, career, gap, hoursPerWeek, grade);
+    return buildGrade10Or11Roadmap(profile, career, gap, hoursPerWeek, gradeInfo.grade);
   }
 
   return buildOtherAgeGroupRoadmap(normAge, profile, career, gap, hoursPerWeek);

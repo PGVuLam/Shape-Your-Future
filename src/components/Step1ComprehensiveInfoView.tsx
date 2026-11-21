@@ -17,7 +17,16 @@ import {
   Layers,
   FileText
 } from 'lucide-react';
-import { UserProfile, AgeGroup, ExamProfile, PlannedExamCode, ExamTimeframe } from '../types';
+import {
+  UserProfile,
+  AgeGroup,
+  ExamProfile,
+  PlannedExamCode,
+  ExamTimeframe,
+  THPT_COMPULSORY_SUBJECTS,
+  THPT_ELECTIVE_SUBJECTS,
+  ExamTimelineEntry
+} from '../types';
 import { VIETNAM_PROVINCES } from '../data/vietnamProvinces';
 import { DEMO_PROFILES } from '../data/demoProfiles';
 import { AGE_GROUPS_CONFIG, detectAgeGroupFromNumber, createEmptyProfile } from '../utils/ageGroupUtils';
@@ -35,6 +44,9 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
   onAdvanceToStep2,
   onLoadDemoProfile
 }) => {
+  const gradeSelectRef = React.useRef<HTMLSelectElement>(null);
+  const [gradeValidationError, setGradeValidationError] = useState<string | null>(null);
+
   // Form data initialized strictly from profile (empty if new survey)
   const [formData, setFormData] = useState<{
     name: string;
@@ -53,11 +65,14 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
     vactScore: string;
     tsaScore: string;
     pedagogyScore: string;
-    thptCombo: string;
+    thptAdmissionCombo: string;
+    thptElectives: string[];
     thptScore: string;
     awards: string[];
     plannedExams: PlannedExamCode[];
     timeUntilExam: ExamTimeframe | '';
+    examTimelines: Partial<Record<PlannedExamCode, ExamTimelineEntry>>;
+    primaryExam?: PlannedExamCode;
     studyGoal: string;
     weakTopicsText: string;
     preferredWorkEnvironment: string[];
@@ -86,11 +101,14 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
     vactScore: profile.examScores?.vactScore ? profile.examScores.vactScore.toString() : '',
     tsaScore: profile.examScores?.tsaScore ? profile.examScores.tsaScore.toString() : '',
     pedagogyScore: profile.examScores?.pedagogyScore ? profile.examScores.pedagogyScore.toString() : '',
-    thptCombo: profile.examScores?.thptCombo || '',
+    thptAdmissionCombo: profile.examScores?.thptAdmissionCombo || profile.examScores?.thptCombo || '',
+    thptElectives: profile.examScores?.thptGraduationSubjects?.electives || [],
     thptScore: profile.examScores?.thptScore ? profile.examScores.thptScore.toString() : '',
     awards: profile.examScores?.awards || [],
     plannedExams: profile.examScores?.plannedExams || [],
     timeUntilExam: profile.examScores?.timeUntilExam || '',
+    examTimelines: profile.examScores?.examTimelines || {},
+    primaryExam: profile.examScores?.primaryExam,
     studyGoal: profile.examScores?.studyGoal || '',
     weakTopicsText: (profile.examScores?.weakTopics || []).join(', '),
     preferredWorkEnvironment: profile.preferredWorkEnvironment || [],
@@ -106,6 +124,7 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
 
   // Keep form data strictly in sync when profile id changes (such as reset to blank)
   useEffect(() => {
+    setGradeValidationError(null);
     setFormData({
       name: profile.name || '',
       age: profile.age ? profile.age.toString() : '',
@@ -123,11 +142,14 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
       vactScore: profile.examScores?.vactScore ? profile.examScores.vactScore.toString() : '',
       tsaScore: profile.examScores?.tsaScore ? profile.examScores.tsaScore.toString() : '',
       pedagogyScore: profile.examScores?.pedagogyScore ? profile.examScores.pedagogyScore.toString() : '',
-      thptCombo: profile.examScores?.thptCombo || '',
+      thptAdmissionCombo: profile.examScores?.thptAdmissionCombo || profile.examScores?.thptCombo || '',
+      thptElectives: profile.examScores?.thptGraduationSubjects?.electives || [],
       thptScore: profile.examScores?.thptScore ? profile.examScores.thptScore.toString() : '',
       awards: profile.examScores?.awards || [],
       plannedExams: profile.examScores?.plannedExams || [],
       timeUntilExam: profile.examScores?.timeUntilExam || '',
+      examTimelines: profile.examScores?.examTimelines || {},
+      primaryExam: profile.examScores?.primaryExam,
       studyGoal: profile.examScores?.studyGoal || '',
       weakTopicsText: (profile.examScores?.weakTopics || []).join(', '),
       preferredWorkEnvironment: profile.preferredWorkEnvironment || [],
@@ -170,6 +192,7 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
   const handleResetToBlank = () => {
     const empty = createEmptyProfile(formData.ageGroup);
     onUpdateProfile(empty);
+    setGradeValidationError(null);
     setFormData({
       name: '',
       age: '',
@@ -187,11 +210,14 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
       vactScore: '',
       tsaScore: '',
       pedagogyScore: '',
-      thptCombo: '',
+      thptAdmissionCombo: '',
+      thptElectives: [],
       thptScore: '',
       awards: [],
       plannedExams: [],
       timeUntilExam: '',
+      examTimelines: {},
+      primaryExam: undefined,
       studyGoal: '',
       weakTopicsText: '',
       preferredWorkEnvironment: [],
@@ -306,8 +332,46 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
     }
   };
 
+  const toggleThptElective = (subject: string) => {
+    setFormData(prev => {
+      const exists = prev.thptElectives.includes(subject);
+      if (exists) {
+        return { ...prev, thptElectives: prev.thptElectives.filter(s => s !== subject) };
+      }
+      if (prev.thptElectives.length >= 2) {
+        // Replace the oldest elective so user always keeps 2 chosen electives cleanly
+        return { ...prev, thptElectives: [prev.thptElectives[1], subject] };
+      }
+      return { ...prev, thptElectives: [...prev.thptElectives, subject] };
+    });
+  };
+
   const handleSaveAndAdvance = () => {
+    // Priority 2: Require explicit grade confirmation for 15-18 high school students
+    if (formData.ageGroup === '15-18' && !formData.grade.trim()) {
+      setGradeValidationError(
+        'Vui lòng xác nhận rõ Khối lớp (Lớp 10, Lớp 11 hoặc Lớp 12) để hệ thống lập đúng giai đoạn lộ trình, không tự suy đoán theo tuổi.'
+      );
+      gradeSelectRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      gradeSelectRef.current?.focus();
+      return;
+    }
+    setGradeValidationError(null);
+
     const ageNum = parseInt(formData.age, 10) || (formData.ageGroup === '6-10' ? 9 : formData.ageGroup === '11-14' ? 13 : formData.ageGroup === '15-18' ? 17 : formData.ageGroup === '19-24' ? 21 : formData.ageGroup === '25-35' ? 28 : 38);
+
+    const filteredTimelines: Partial<Record<PlannedExamCode, ExamTimelineEntry>> = {};
+    for (const code of formData.plannedExams) {
+      const entry = formData.examTimelines[code];
+      const isPrimary = formData.primaryExam === code;
+      if (entry?.timeframe || entry?.targetDate?.trim() || isPrimary) {
+        filteredTimelines[code] = {
+          ...(entry?.timeframe ? { timeframe: entry.timeframe } : {}),
+          ...(entry?.targetDate?.trim() ? { targetDate: entry.targetDate.trim() } : {}),
+          ...(isPrimary ? { isPrimary: true } : {})
+        };
+      }
+    }
 
     const updated: UserProfile = {
       ...profile,
@@ -334,11 +398,20 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
         vactScore: formData.vactScore ? parseFloat(formData.vactScore) : undefined,
         tsaScore: formData.tsaScore ? parseFloat(formData.tsaScore) : undefined,
         pedagogyScore: formData.pedagogyScore ? parseFloat(formData.pedagogyScore) : undefined,
-        thptCombo: formData.thptCombo,
+        thptAdmissionCombo: formData.thptAdmissionCombo,
+        thptCombo: formData.thptAdmissionCombo,
+        thptGraduationSubjects: {
+          compulsory: [...THPT_COMPULSORY_SUBJECTS],
+          electives: formData.thptElectives
+        },
         thptScore: formData.thptScore ? parseFloat(formData.thptScore) : undefined,
         awards: formData.awards,
         plannedExams: formData.plannedExams,
         timeUntilExam: formData.timeUntilExam ? (formData.timeUntilExam as ExamTimeframe) : undefined,
+        examTimelines: filteredTimelines,
+        primaryExam: formData.primaryExam && formData.plannedExams.includes(formData.primaryExam)
+          ? formData.primaryExam
+          : undefined,
         studyGoal: formData.studyGoal.trim() || undefined,
         weakTopics: formData.weakTopicsText.split(',').map(s => s.trim()).filter(Boolean),
         customExamRatio: profile.examScores?.customExamRatio
@@ -384,12 +457,13 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
             onClick={() => {
               const demo = DEMO_PROFILES['demo-hs-tech'];
               onLoadDemoProfile(demo);
+              setGradeValidationError(null);
               setFormData({
                 name: demo.name,
                 age: demo.age.toString(),
                 gender: 'Nam',
                 province: 'Hà Nội',
-                grade: 'Lớp 11',
+                grade: demo.grade || 'Lớp 11',
                 ageGroup: '15-18',
                 favoriteSubjects: demo.favoriteSubjects,
                 confidentSubjects: ['Toán học', 'Tin học'],
@@ -401,11 +475,18 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
                 vactScore: '',
                 tsaScore: '74',
                 pedagogyScore: '',
-                thptCombo: 'A00 (Toán, Lý, Hóa)',
+                thptAdmissionCombo: demo.examScores?.thptAdmissionCombo || demo.examScores?.thptCombo || 'A00 (Toán, Lý, Hóa)',
+                thptElectives: demo.examScores?.thptGraduationSubjects?.electives || ['Vật lý', 'Tiếng Anh'],
                 thptScore: '26.5',
                 awards: ['IELTS 7.0', 'Giải Nhì HSG Tin học cấp Tỉnh'],
                 plannedExams: ['THPT', 'HSA', 'TSA'],
                 timeUntilExam: '3–6 tháng',
+                examTimelines: demo.examScores?.examTimelines || {
+                  HSA: { timeframe: '1–3 tháng', isPrimary: true },
+                  TSA: { timeframe: '3–6 tháng' },
+                  THPT: { timeframe: '3–6 tháng' }
+                },
+                primaryExam: demo.examScores?.primaryExam || 'HSA',
                 studyGoal: 'Đạt ngưỡng cạnh tranh khối A00 và HSA/TSA vào ngành Kỹ thuật',
                 weakTopicsText: '',
                 preferredWorkEnvironment: demo.preferredWorkEnvironment,
@@ -554,11 +635,24 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
         {/* Grade / Stage & Current Occupation if adult */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
           <div>
-            <label className="font-semibold text-slate-700 block mb-1">Khối lớp / Giai đoạn học tập:</label>
+            <label className="font-semibold text-slate-700 block mb-1">
+              Khối lớp / Giai đoạn học tập:
+              {formData.ageGroup === '15-18' && (
+                <span className="text-rose-600 ml-1">*</span>
+              )}
+            </label>
             <select
+              ref={gradeSelectRef}
               value={formData.grade}
-              onChange={e => setFormData({ ...formData, grade: e.target.value })}
-              className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
+              onChange={e => {
+                setFormData({ ...formData, grade: e.target.value });
+                if (e.target.value) setGradeValidationError(null);
+              }}
+              className={`w-full px-3 py-2 rounded-xl border bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 text-xs ${
+                gradeValidationError
+                  ? 'border-rose-400 focus:ring-rose-500 bg-rose-50/40'
+                  : 'border-slate-200 focus:ring-indigo-500'
+              }`}
             >
               <option value="">-- Chọn Khối lớp / Trình độ tương ứng --</option>
               {getGradeOptions().map(g => (
@@ -567,6 +661,19 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
                 </option>
               ))}
             </select>
+            {formData.ageGroup === '15-18' && !formData.grade && (
+              <p className={`text-[11px] mt-1 ${gradeValidationError ? 'text-rose-700 font-semibold' : 'text-amber-700'}`}>
+                {gradeValidationError
+                  ? gradeValidationError
+                  : `Vui lòng xác nhận rõ Lớp 10, Lớp 11 hoặc Lớp 12${
+                      formData.age
+                        ? ` (gợi ý theo tuổi ${formData.age}: ${
+                            Number(formData.age) >= 18 ? 'Lớp 12' : Number(formData.age) === 17 ? 'Lớp 11' : 'Lớp 10'
+                          } — hệ thống không tự gán nếu bạn chưa xác nhận)`
+                        : ''
+                    }.`}
+              </p>
+            )}
           </div>
 
           <div>
@@ -764,19 +871,24 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
             <div>
-              <label className="font-semibold text-slate-700 block mb-1">Khối thi THPT Quốc gia:</label>
+              <label className="font-semibold text-slate-700 block mb-1">
+                Tổ hợp xét tuyển Đại học (A00, A01, D01...):
+              </label>
               <select
-                value={formData.thptCombo}
-                onChange={e => setFormData({ ...formData, thptCombo: e.target.value })}
+                value={formData.thptAdmissionCombo}
+                onChange={e => setFormData({ ...formData, thptAdmissionCombo: e.target.value })}
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
               >
-                <option value="">-- Chọn Khối thi --</option>
+                <option value="">-- Chọn Tổ hợp xét tuyển ĐH --</option>
                 {thptCombos.map(c => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
               </select>
+              <span className="text-[10px] text-slate-500 mt-1 block">
+                Chỉ dùng cho định hướng xét tuyển ĐH; môn thi tốt nghiệp THPT chọn riêng bên dưới.
+              </span>
             </div>
 
             <div>
@@ -810,7 +922,56 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
             </div>
           </div>
 
-          {/* Planned Exams, Exam Timeline, Study Goal & Weak Topics (Strictly un-prefilled) */}
+          {/* THPT Graduation Exam Subjects under Circular 24/2024/TT-BGDĐT */}
+          <div className="p-3.5 rounded-2xl bg-slate-50/90 border border-slate-200/80 space-y-2.5 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+              <span className="font-bold text-slate-800">
+                Môn thi Tốt nghiệp THPT (Thông tư 24/2024/TT-BGDĐT — 2 bắt buộc + 2 tự chọn):
+              </span>
+              <span className="text-[11px] font-semibold text-indigo-700 tabular-nums">
+                Đã chọn {formData.thptElectives.length}/2 môn tự chọn
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-slate-600 mr-1">Bắt buộc:</span>
+              {THPT_COMPULSORY_SUBJECTS.map(subj => (
+                <span
+                  key={subj}
+                  className="px-2.5 py-1 rounded-lg bg-slate-200/80 text-slate-800 font-bold text-[11px] border border-slate-300/80"
+                >
+                  ✓ {subj}
+                </span>
+              ))}
+            </div>
+
+            <div className="space-y-1">
+              <span className="text-[11px] font-semibold text-slate-600 block">
+                Chọn đúng 2 môn tự chọn thi tốt nghiệp THPT (tách biệt với tổ hợp xét tuyển ĐH):
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {THPT_ELECTIVE_SUBJECTS.map(subj => {
+                  const selected = formData.thptElectives.includes(subj);
+                  return (
+                    <button
+                      key={subj}
+                      type="button"
+                      onClick={() => toggleThptElective(subj)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
+                        selected
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {selected ? '✓ ' : ''}{subj}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Planned Exams, Per-Exam Timeline, Study Goal & Weak Topics (Strictly un-prefilled) */}
           <div className="pt-3 border-t border-slate-100 space-y-3 text-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <span className="font-semibold text-slate-700">
@@ -832,12 +993,17 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
                     key={code}
                     type="button"
                     onClick={() => {
-                      setFormData(prev => ({
-                        ...prev,
-                        plannedExams: checked
+                      setFormData(prev => {
+                        const nextExams = checked
                           ? prev.plannedExams.filter(x => x !== code)
-                          : [...prev.plannedExams, code]
-                      }));
+                          : [...prev.plannedExams, code];
+                        return {
+                          ...prev,
+                          plannedExams: nextExams,
+                          primaryExam:
+                            checked && prev.primaryExam === code ? undefined : prev.primaryExam
+                        };
+                      });
                     }}
                     className={`px-3 py-1.5 rounded-xl font-semibold border transition-all cursor-pointer ${
                       checked
@@ -851,9 +1017,93 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
               })}
             </div>
 
+            {/* Per-Exam Timelines & Priority */}
+            {formData.plannedExams.length > 0 && (
+              <div className="p-3 rounded-2xl bg-indigo-50/50 border border-indigo-100 space-y-2">
+                <div className="text-[11px] font-bold text-indigo-950">
+                  Mốc thời gian & Ưu tiên riêng cho từng kỳ thi (nếu khác nhau):
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  {formData.plannedExams.map(code => {
+                    const entry = formData.examTimelines[code] || {};
+                    const isPrimary = formData.primaryExam === code;
+                    return (
+                      <div
+                        key={code}
+                        className="p-2.5 rounded-xl bg-white border border-slate-200 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-slate-900">{code}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFormData(prev => ({
+                                ...prev,
+                                primaryExam: isPrimary ? undefined : code
+                              }))
+                            }
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold border cursor-pointer transition-colors ${
+                              isPrimary
+                                ? 'bg-amber-500 text-white border-amber-500'
+                                : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            {isPrimary ? '★ Kỳ thi ưu tiên chính' : 'Đặt làm ưu tiên chính'}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <select
+                            value={entry.timeframe || ''}
+                            onChange={e =>
+                              setFormData(prev => ({
+                                ...prev,
+                                examTimelines: {
+                                  ...prev.examTimelines,
+                                  [code]: {
+                                    ...prev.examTimelines[code],
+                                    timeframe: (e.target.value || undefined) as ExamTimeframe | undefined
+                                  }
+                                }
+                              }))
+                            }
+                            className="px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-[11px]"
+                          >
+                            <option value="">Dùng mốc chung</option>
+                            <option value="< 1 tháng">&lt; 1 tháng</option>
+                            <option value="1–3 tháng">1–3 tháng</option>
+                            <option value="3–6 tháng">3–6 tháng</option>
+                            <option value="6–9 tháng">6–9 tháng</option>
+                            <option value="> 9 tháng">&gt; 9 tháng</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={entry.targetDate || ''}
+                            onChange={e =>
+                              setFormData(prev => ({
+                                ...prev,
+                                examTimelines: {
+                                  ...prev.examTimelines,
+                                  [code]: {
+                                    ...prev.examTimelines[code],
+                                    targetDate: e.target.value
+                                  }
+                                }
+                              }))
+                            }
+                            placeholder="Đợt / ngày dự kiến (tùy chọn)"
+                            className="px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-[11px]"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
               <div>
-                <label className="font-semibold text-slate-700 block mb-1">Thời gian còn lại tới kỳ thi:</label>
+                <label className="font-semibold text-slate-700 block mb-1">Mốc thời gian chung (fallback):</label>
                 <select
                   value={formData.timeUntilExam}
                   onChange={e => setFormData({ ...formData, timeUntilExam: e.target.value as ExamTimeframe | '' })}

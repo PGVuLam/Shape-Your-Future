@@ -1,3 +1,4 @@
+import { normalizeLLMProvider } from '../../types';
 import { LLMProviderRequest, NormalizedAIResponse } from './types';
 import { generateOfflineCounselingResponse } from './offlineReasoningEngine';
 
@@ -10,13 +11,14 @@ export async function executeLLMRequest(
   request: LLMProviderRequest
 ): Promise<NormalizedAIResponse> {
   const { userQuestion, context, chatHistory, language = 'vi', llmConfig } = request;
+  const canonicalProvider = normalizeLLMProvider(llmConfig?.provider);
 
-  // 1. Explicit local / offline mode requested
-  if (llmConfig?.provider === 'local') {
+  // 1. Explicit Offline Deterministic Engine mode requested (never pretends to be an LLM)
+  if (canonicalProvider === 'offline-engine') {
     return generateOfflineCounselingResponse(context, userQuestion, language);
   }
 
-  // 2. Call backend AI proxy (/api/ai/counselor) for Gemini 3.8 Flash or Custom Local Endpoint
+  // 2. Call backend AI proxy (/api/ai/counselor) for Cloud Gemini or Local Ollama LLM
   try {
     const res = await fetch('/api/ai/counselor', {
       method: 'POST',
@@ -26,8 +28,10 @@ export async function executeLLMRequest(
         language,
         llmConfig: {
           ...llmConfig,
-          provider: llmConfig?.provider || 'gemini',
-          modelName: llmConfig?.modelName || 'gemini-3.8-flash',
+          provider: canonicalProvider,
+          modelName:
+            llmConfig?.modelName ||
+            (canonicalProvider === 'ollama' ? 'qwen2.5:7b' : 'gemini-3.8-flash'),
           maxOutputTokens: 800,
           maxTokens: 800
         },

@@ -32,7 +32,7 @@ export function getCareerAdmissionInfo(career: Career, profile?: UserProfile): C
   const cluster = (career.careerCluster || '').toLowerCase();
   const title = (career.title || '').toLowerCase();
   const subjects = (career.relevantSubjects || []).map(s => s.toLowerCase());
-  const studentCombo = (profile?.examScores?.thptCombo || '').toUpperCase();
+  const studentCombo = (profile?.examScores?.thptAdmissionCombo || profile?.examScores?.thptCombo || '').toUpperCase();
   const favSubs = (profile?.favoriteSubjects || []).map(s => s.toLowerCase());
   const confSubs = (profile?.confidentSubjects || []).map(s => s.toLowerCase());
 

@@ -59,22 +59,64 @@ export type PlannedExamCode = 'THPT' | 'HSA' | 'V-ACT' | 'TSA';
 
 export type ExamTimeframe = '< 1 tháng' | '1–3 tháng' | '3–6 tháng' | '6–9 tháng' | '> 9 tháng' | 'unknown';
 
+/**
+ * Official THPT Graduation Exam Structure (2025+, Circular 24/2024/TT-BGDĐT):
+ * 2 compulsory subjects (Toán học, Ngữ văn) + 2 elective subjects.
+ */
+export const THPT_COMPULSORY_SUBJECTS = ['Toán học', 'Ngữ văn'] as const;
+
+export const THPT_ELECTIVE_SUBJECTS = [
+  'Vật lý',
+  'Hóa học',
+  'Sinh học',
+  'Lịch sử',
+  'Địa lý',
+  'Giáo dục kinh tế và pháp luật',
+  'Tin học',
+  'Công nghệ (Công nghiệp / Nông nghiệp)',
+  'Tiếng Anh',
+  'Ngoại ngữ khác'
+] as const;
+
+export interface ThptGraduationSubjects {
+  compulsory: string[];
+  electives: string[];
+}
+
+export interface ExamTimelineEntry {
+  timeframe?: ExamTimeframe;
+  targetDate?: string;
+  isPrimary?: boolean;
+}
+
 export interface ExamProfile {
   hsaScore?: number; // HSA ĐHQG Hà Nội (thang 150)
   vactScore?: number; // V-ACT ĐHQG TP.HCM (thang 1200)
   tsaScore?: number; // TSA Bách Khoa Hà Nội (thang 100)
   pedagogyScore?: number; // Đánh giá năng lực Sư phạm (thang 100)
-  thptCombo?: string; // Khối thi (A00, A01, B00, C00, D01, ...)
+  thptAdmissionCombo?: string; // Tổ hợp xét tuyển Đại học (A00, A01, B00, C00, D01, ...)
+  /** @deprecated Legacy alias for university admission combination; kept for backward compatibility */
+  thptCombo?: string;
+  thptGraduationSubjects?: ThptGraduationSubjects; // 2 môn bắt buộc (Toán, Văn) + 2 môn tự chọn thi tốt nghiệp THPT
   thptScore?: number; // Điểm thi THPT QG ước tính hoặc thực tế (thang 30)
   awards?: string[]; // Chứng chỉ / Giải thưởng (IELTS, HSG, KHKT...)
   plannedExams?: PlannedExamCode[]; // Chỉ các kỳ thi học sinh thực sự dự định tham gia
-  timeUntilExam?: ExamTimeframe; // Khoảng thời gian còn lại tới kỳ thi mục tiêu
+  timeUntilExam?: ExamTimeframe; // Mốc thời gian chung (fallback khi chưa đặt riêng theo từng kỳ thi)
+  examTimelines?: Partial<Record<PlannedExamCode, ExamTimelineEntry>>; // Mốc thời gian riêng cho từng kỳ thi
+  primaryExam?: PlannedExamCode; // Kỳ thi ưu tiên chính khi lịch học hạn chế
   studyGoal?: string; // Mục tiêu học tập / xét tuyển (VD: "Đạt 26+ khối A01", "Nâng nền tảng Toán")
   weakTopics?: string[]; // Chuyên đề yếu thực tế do học sinh tự khai báo hoặc từ đánh giá
   customExamRatio?: number; // Tỷ lệ % ôn thi do người dùng tự điều chỉnh (0-100)
 }
 
-export type LLMProviderType = 'local' | 'gemini' | 'custom';
+export type CanonicalLLMProvider = 'gemini' | 'ollama' | 'offline-engine';
+export type LLMProviderType = CanonicalLLMProvider | 'local' | 'custom';
+
+export function normalizeLLMProvider(provider?: string): CanonicalLLMProvider {
+  if (provider === 'offline-engine' || provider === 'local') return 'offline-engine';
+  if (provider === 'ollama' || provider === 'custom') return 'ollama';
+  return 'gemini';
+}
 
 export interface LLMConfig {
   provider: LLMProviderType;
@@ -84,7 +126,7 @@ export interface LLMConfig {
   temperature?: number;
   maxTokens?: number;
   maxOutputTokens?: number;
-  systemPromptStyle?: 'empathetic' | 'analytical' | 'strategic';
+  systemPromptStyle?: 'empathetic' | 'analytical' | 'strategic' | 'balanced';
   connectionStatus?: 'unknown' | 'connected' | 'error';
   lastPingMs?: number;
 }
@@ -302,6 +344,14 @@ export interface StudyTaskItem {
   studyMethod: string; // (4) Phương pháp học / luyện đề / phân tích lỗi
   estimatedDuration: string; // (5) Thời lượng dự kiến
   verificationMethod: string; // (6) Cách kiểm chứng hoàn thành
+  examCode?: PlannedExamCode;
+  allocatedHours?: number;
+  priority?: 'High' | 'Medium' | 'Low';
+  examTimeframe?: ExamTimeframe;
+  targetExamDate?: string;
+  originalWeakTopics?: string[];
+  aiSuggestionNote?: string;
+  allocationTradeoffNote?: string;
 }
 
 export interface RoadmapPhase {
@@ -322,25 +372,52 @@ export interface RoadmapPhase {
   actionSteps?: RoadmapMilestoneStep[];
 }
 
+export interface ExamAllocationSummary {
+  exam: PlannedExamCode;
+  hours: number;
+  timeframe: ExamTimeframe;
+  targetDate?: string;
+  isPrimary: boolean;
+  rationale: string;
+}
+
+export interface RoadmapAIValidationStatus {
+  jsonValid: boolean;
+  schemaValid: boolean;
+  contentAccepted: boolean;
+  aiChangesApplied: boolean;
+  fallbackUsed: boolean;
+  rejectedReasons?: string[];
+}
+
 export interface LearningRoadmap {
   careerId: string;
   careerTitle: string;
   targetAgeGroup: AgeGroup;
   stageLabel?: string;
   gradeDetected?: string;
+  suggestedGrade?: string;
+  needsGradeConfirmation?: boolean;
+  needsGraduationSubjectsConfirmation?: boolean;
   allocation?: {
     examRatio: number;
     skillRatio: number;
+    examHoursPerWeek?: number;
+    skillHoursPerWeek?: number;
+    totalHoursPerWeek?: number;
+    tradeoffWarning?: string;
     isDefault: boolean;
     isUserAdjusted?: boolean;
     rationale: string;
   };
+  examAllocations?: ExamAllocationSummary[];
   needsExamConfirmation?: boolean;
   isTimelineEstimated?: boolean;
   plannedExams?: PlannedExamCode[];
   source?: 'engine' | 'ai-hybrid';
   modelUsed?: string;
   validationWarnings?: string[];
+  aiValidationStatus?: RoadmapAIValidationStatus;
   phases: RoadmapPhase[];
   tailoredNote: string;
 }

@@ -23,11 +23,15 @@ import {
 } from 'lucide-react';
 import {
   Career,
+  ExamTimelineEntry,
   ExamTimeframe,
   LearningRoadmap,
   LLMConfig,
+  normalizeLLMProvider,
   PlannedExamCode,
   RecommendationScore,
+  THPT_COMPULSORY_SUBJECTS,
+  THPT_ELECTIVE_SUBJECTS,
   UserProfile
 } from '../types';
 import { CAREER_DATABASE } from '../data/careers';
@@ -66,8 +70,12 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
 
   // Local profile mirror for interactive controls when parent doesn't re-pass immediately
   const [localExamOverride, setLocalExamOverride] = useState<{
+    grade?: string;
     plannedExams?: PlannedExamCode[];
+    thptElectives?: string[];
     timeUntilExam?: ExamTimeframe;
+    examTimelines?: Partial<Record<PlannedExamCode, ExamTimelineEntry>>;
+    primaryExam?: PlannedExamCode | null;
     customExamRatio?: number | null;
     weakTopicsText?: string;
     studyGoal?: string;
@@ -88,14 +96,28 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
 
   const effectiveProfile: UserProfile = useMemo(() => {
     const baseExams = profile.examScores || {};
+    const nextGrade =
+      localExamOverride.grade !== undefined ? localExamOverride.grade : profile.grade;
     const nextPlanned =
       localExamOverride.plannedExams !== undefined
         ? localExamOverride.plannedExams
         : baseExams.plannedExams;
+    const nextElectives =
+      localExamOverride.thptElectives !== undefined
+        ? localExamOverride.thptElectives
+        : baseExams.thptGraduationSubjects?.electives;
     const nextTime =
       localExamOverride.timeUntilExam !== undefined
         ? localExamOverride.timeUntilExam
         : baseExams.timeUntilExam;
+    const nextTimelines =
+      localExamOverride.examTimelines !== undefined
+        ? localExamOverride.examTimelines
+        : baseExams.examTimelines;
+    const nextPrimary =
+      localExamOverride.primaryExam !== undefined
+        ? localExamOverride.primaryExam || undefined
+        : baseExams.primaryExam;
     const nextRatio =
       localExamOverride.customExamRatio !== undefined
         ? localExamOverride.customExamRatio === null
@@ -116,12 +138,23 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
 
     return {
       ...profile,
+      grade: nextGrade,
       availableStudyTimeHoursPerWeek:
         localExamOverride.hoursPerWeek ?? profile.availableStudyTimeHoursPerWeek,
       examScores: {
         ...baseExams,
         plannedExams: nextPlanned,
+        thptGraduationSubjects: {
+          compulsory:
+            baseExams.thptGraduationSubjects?.compulsory &&
+            baseExams.thptGraduationSubjects.compulsory.length >= 2
+              ? baseExams.thptGraduationSubjects.compulsory
+              : [...THPT_COMPULSORY_SUBJECTS],
+          electives: nextElectives || []
+        },
         timeUntilExam: nextTime,
+        examTimelines: nextTimelines,
+        primaryExam: nextPrimary,
         customExamRatio: nextRatio,
         weakTopics: nextWeak,
         studyGoal: nextGoal
@@ -135,7 +168,19 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
       const mergedExams = {
         ...(effectiveProfile.examScores || {}),
         ...(patch.plannedExams !== undefined ? { plannedExams: patch.plannedExams } : {}),
+        ...(patch.thptElectives !== undefined
+          ? {
+              thptGraduationSubjects: {
+                compulsory: [...THPT_COMPULSORY_SUBJECTS],
+                electives: patch.thptElectives
+              }
+            }
+          : {}),
         ...(patch.timeUntilExam !== undefined ? { timeUntilExam: patch.timeUntilExam } : {}),
+        ...(patch.examTimelines !== undefined ? { examTimelines: patch.examTimelines } : {}),
+        ...(patch.primaryExam !== undefined
+          ? { primaryExam: patch.primaryExam || undefined }
+          : {}),
         ...(patch.customExamRatio !== undefined
           ? { customExamRatio: patch.customExamRatio === null ? undefined : patch.customExamRatio }
           : {}),
@@ -151,6 +196,7 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
       };
       onUpdateProfile({
         ...effectiveProfile,
+        grade: patch.grade !== undefined ? patch.grade : effectiveProfile.grade,
         availableStudyTimeHoursPerWeek:
           patch.hoursPerWeek ?? effectiveProfile.availableStudyTimeHoursPerWeek,
         examScores: mergedExams
@@ -191,6 +237,9 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
     effectiveProfile.ageGroup,
     effectiveProfile.availableStudyTimeHoursPerWeek,
     JSON.stringify(effectiveProfile.examScores?.plannedExams || []),
+    JSON.stringify(effectiveProfile.examScores?.thptGraduationSubjects || {}),
+    JSON.stringify(effectiveProfile.examScores?.examTimelines || {}),
+    effectiveProfile.examScores?.primaryExam,
     effectiveProfile.examScores?.timeUntilExam,
     effectiveProfile.examScores?.customExamRatio,
     JSON.stringify(effectiveProfile.examScores?.weakTopics || []),
@@ -198,6 +247,7 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
   ]);
 
   const activeRoadmap = aiRefinedRoadmap || baseRoadmap;
+  const normalizedProvider = normalizeLLMProvider(llmConfig?.provider);
 
   const handleRefineWithAI = async () => {
     if (isRefiningAI) return;
@@ -216,7 +266,11 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
       if (res.errorNotice) {
         setAiNotice(res.errorNotice);
       } else if (!res.usedAI) {
-        setAiNotice('Đang sử dụng lộ trình chuẩn hóa từ Engine (chế độ Offline/Local Engine).');
+        setAiNotice(
+          normalizedProvider === 'offline-engine'
+            ? 'Đang ở chế độ Engine Quy tắc Nội bộ (Offline — không dùng LLM).'
+            : 'Chưa áp dụng thay đổi từ AI; hệ thống đang dùng bản Engine chuẩn hóa.'
+        );
       }
     } finally {
       setIsRefiningAI(false);
@@ -236,12 +290,26 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
 
   const isHighSchool = activeRoadmap.targetAgeGroup === '15-18';
   const currentPlannedExams = effectiveProfile.examScores?.plannedExams || [];
+  const currentElectives = effectiveProfile.examScores?.thptGraduationSubjects?.electives || [];
+  const currentExamTimelines = effectiveProfile.examScores?.examTimelines || {};
+  const currentPrimaryExam = effectiveProfile.examScores?.primaryExam;
   const currentTimeUntilExam = effectiveProfile.examScores?.timeUntilExam || 'unknown';
   const currentWeakTopicsText =
     localExamOverride.weakTopicsText !== undefined
       ? localExamOverride.weakTopicsText
       : (effectiveProfile.examScores?.weakTopics || []).join(', ');
   const currentHours = effectiveProfile.availableStudyTimeHoursPerWeek || 10;
+
+  const toggleQuickElective = (subj: string) => {
+    const exists = currentElectives.includes(subj);
+    if (exists) {
+      applyProfilePatch({ thptElectives: currentElectives.filter(s => s !== subj) });
+    } else if (currentElectives.length >= 2) {
+      applyProfilePatch({ thptElectives: [currentElectives[1], subj] });
+    } else {
+      applyProfilePatch({ thptElectives: [...currentElectives, subj] });
+    }
+  };
 
   return (
     <div className="space-y-5 max-w-7xl mx-auto pb-8">
@@ -334,6 +402,7 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                 }}
                 className="font-bold text-indigo-700 bg-transparent border-none focus:outline-none cursor-pointer tabular-nums"
               >
+                <option value={3}>3 giờ/tuần</option>
                 <option value={5}>5 giờ/tuần</option>
                 <option value={8}>8 giờ/tuần</option>
                 <option value={10}>10 giờ/tuần</option>
@@ -351,13 +420,13 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
               <div className="flex items-center gap-2 font-bold text-slate-800">
                 <Sliders className="w-4 h-4 text-indigo-600" />
                 <span>
-                  Cấu hình Kỳ thi & Phân bổ Ôn thi / Kỹ năng ({activeRoadmap.gradeDetected || 'THPT'})
+                  Cấu hình Kỳ thi & Phân bổ Ôn thi / Kỹ năng ({activeRoadmap.gradeDetected || 'Chưa xác nhận khối lớp'})
                 </span>
               </div>
               {activeRoadmap.allocation && (
                 <div className="text-[11px] font-semibold text-slate-600 tabular-nums">
-                  Đang áp dụng: <strong className="text-indigo-700">{activeRoadmap.allocation.examRatio}% ôn thi</strong> ·{' '}
-                  <strong className="text-emerald-700">{activeRoadmap.allocation.skillRatio}% kỹ năng</strong>{' '}
+                  Đang áp dụng: <strong className="text-indigo-700">{activeRoadmap.allocation.examRatio}% ôn thi ({activeRoadmap.allocation.examHoursPerWeek}h)</strong> ·{' '}
+                  <strong className="text-emerald-700">{activeRoadmap.allocation.skillRatio}% kỹ năng ({activeRoadmap.allocation.skillHoursPerWeek}h)</strong>{' '}
                   {activeRoadmap.allocation.isUserAdjusted
                     ? '(Tự điều chỉnh)'
                     : activeRoadmap.allocation.isDefault
@@ -367,12 +436,75 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
               )}
             </div>
 
+            {/* Grade Confirmation Banner when 15-18 student has no explicit grade */}
+            {activeRoadmap.needsGradeConfirmation && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-950 space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Cần xác nhận khối lớp hiện tại:</strong> Hệ thống không tự động ép lớp theo tuổi để tránh sai giai đoạn ôn thi Lớp 12. Vui lòng chọn đúng khối lớp của bạn:
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pl-6">
+                  {(['10', '11', '12'] as const).map(g => {
+                    const label = `Lớp ${g}`;
+                    const isSuggested = activeRoadmap.suggestedGrade === g;
+                    return (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => applyProfilePatch({ grade: label })}
+                        className={`px-3 py-1.5 rounded-lg font-bold border transition-all cursor-pointer ${
+                          isSuggested
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {label}{isSuggested ? ' (Gợi ý theo tuổi)' : ''}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Warning if exams not yet confirmed */}
-            {activeRoadmap.needsExamConfirmation && (
+            {activeRoadmap.needsExamConfirmation && !activeRoadmap.needsGradeConfirmation && (
               <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div>
                   <strong>Cần xác nhận kỳ thi tham gia:</strong> Bạn chưa chọn kỳ thi dự định (THPT, HSA, V-ACT hoặc TSA). Hãy tích chọn bên dưới để hệ thống lập lịch ôn chi tiết cho đúng kỳ thi bạn cần.
+                </div>
+              </div>
+            )}
+
+            {/* Warning & quick picker if THPT selected without 2 graduation electives */}
+            {activeRoadmap.needsGraduationSubjectsConfirmation && (
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-950 space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Chưa đủ 2 môn tự chọn thi Tốt nghiệp THPT (Thông tư 24/2024):</strong> Tổ hợp xét tuyển ĐH ({effectiveProfile.examScores?.thptAdmissionCombo || effectiveProfile.examScores?.thptCombo || 'chưa chọn'}) không đồng nghĩa với môn thi tốt nghiệp. Bắt buộc gồm <strong>{THPT_COMPULSORY_SUBJECTS.join(', ')}</strong> — vui lòng chọn thêm 2 môn tự chọn ({currentElectives.length}/2):
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 pl-6">
+                  {THPT_ELECTIVE_SUBJECTS.map(subj => {
+                    const active = currentElectives.includes(subj);
+                    return (
+                      <button
+                        key={subj}
+                        type="button"
+                        onClick={() => toggleQuickElective(subj)}
+                        className={`px-2 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors ${
+                          active
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {active ? '✓ ' : ''}{subj}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -394,7 +526,10 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                           const next = active
                             ? currentPlannedExams.filter(x => x !== code)
                             : [...currentPlannedExams, code];
-                          applyProfilePatch({ plannedExams: next });
+                          applyProfilePatch({
+                            plannedExams: next,
+                            ...(active && currentPrimaryExam === code ? { primaryExam: null } : {})
+                          });
                         }}
                         className={`px-2.5 py-1 rounded-lg font-bold border transition-all cursor-pointer ${
                           active
@@ -409,10 +544,10 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                 </div>
               </div>
 
-              {/* Time until exam */}
+              {/* Time until exam (shared fallback) */}
               <div className="lg:col-span-3 space-y-1">
                 <label className="text-[11px] font-semibold text-slate-700 block">
-                  Thời gian còn lại tới kỳ thi:
+                  Mốc thời gian chung (fallback):
                 </label>
                 <select
                   value={currentTimeUntilExam === 'unknown' ? '' : currentTimeUntilExam}
@@ -464,6 +599,84 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Per-Exam Timeline & Dynamic Hour Allocation Breakdown */}
+            {currentPlannedExams.length > 0 && (
+              <div className="p-3 rounded-lg bg-white border border-slate-200/90 space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <span className="text-[11px] font-bold text-slate-800">
+                    Phân bổ giờ/tuần & Mốc thời gian riêng theo từng kỳ thi:
+                  </span>
+                  {activeRoadmap.allocation && (
+                    <span className="text-[11px] text-slate-500 tabular-nums">
+                      Tổng giờ ôn thi: <strong className="text-indigo-700">{activeRoadmap.allocation.examHoursPerWeek}h</strong> / {currentHours}h mỗi tuần
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                  {currentPlannedExams.map(code => {
+                    const alloc = activeRoadmap.examAllocations?.find(a => a.exam === code);
+                    const entry = currentExamTimelines[code] || {};
+                    const isPrimary = currentPrimaryExam === code;
+                    return (
+                      <div key={code} className="p-2 rounded-lg bg-slate-50 border border-slate-200 space-y-1.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-bold text-slate-900">{code}</span>
+                          <span className="text-[11px] font-bold text-indigo-700 tabular-nums">
+                            {alloc ? `${alloc.hours}h/tuần` : '—'}
+                          </span>
+                        </div>
+                        <select
+                          value={entry.timeframe || ''}
+                          onChange={e =>
+                            applyProfilePatch({
+                              examTimelines: {
+                                ...currentExamTimelines,
+                                [code]: {
+                                  ...currentExamTimelines[code],
+                                  timeframe: (e.target.value || undefined) as ExamTimeframe | undefined
+                                }
+                              }
+                            })
+                          }
+                          className="w-full px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                        >
+                          <option value="">Theo mốc chung</option>
+                          <option value="< 1 tháng">&lt; 1 tháng</option>
+                          <option value="1–3 tháng">1–3 tháng</option>
+                          <option value="3–6 tháng">3–6 tháng</option>
+                          <option value="6–9 tháng">6–9 tháng</option>
+                          <option value="> 9 tháng">&gt; 9 tháng</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyProfilePatch({
+                              primaryExam: isPrimary ? null : code
+                            })
+                          }
+                          className={`w-full py-0.5 rounded text-[10px] font-bold border cursor-pointer transition-colors ${
+                            isPrimary
+                              ? 'bg-amber-500 text-white border-amber-500'
+                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {isPrimary ? '★ Ưu tiên chính' : 'Chọn ưu tiên chính'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Tight weekly hour budget tradeoff warning */}
+            {activeRoadmap.allocation?.tradeoffWarning && (
+              <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900 flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                <span>{activeRoadmap.allocation.tradeoffWarning}</span>
+              </div>
+            )}
 
             {/* Optional Weak Topics Input */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
@@ -575,8 +788,10 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
               <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
               <span>
                 Nguồn lộ trình:{' '}
-                {activeRoadmap.source === 'ai-hybrid'
-                  ? `Hybrid AI (${activeRoadmap.modelUsed || 'Gemini / Local AI'})`
+                {activeRoadmap.source === 'ai-hybrid' && activeRoadmap.aiValidationStatus?.aiChangesApplied
+                  ? `Hybrid AI (${activeRoadmap.modelUsed || (normalizedProvider === 'ollama' ? 'Local LLM Ollama' : 'Gemini Cloud')})`
+                  : normalizedProvider === 'offline-engine'
+                  ? 'Engine Quy tắc Nội bộ (Offline — Không dùng LLM)'
                   : 'Engine chuẩn hóa'}
               </span>
             </span>
@@ -587,6 +802,50 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
             )}
           </div>
           <p className="leading-relaxed">{activeRoadmap.tailoredNote}</p>
+          {activeRoadmap.aiValidationStatus && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] font-semibold">
+              <span
+                className={`px-2 py-0.5 rounded border ${
+                  activeRoadmap.aiValidationStatus.jsonValid
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}
+              >
+                JSON: {activeRoadmap.aiValidationStatus.jsonValid ? 'Hợp lệ' : 'Lỗi'}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded border ${
+                  activeRoadmap.aiValidationStatus.schemaValid
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}
+              >
+                Schema: {activeRoadmap.aiValidationStatus.schemaValid ? 'Hợp lệ' : 'Lỗi'}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded border ${
+                  activeRoadmap.aiValidationStatus.contentAccepted
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                }`}
+              >
+                Nội dung: {activeRoadmap.aiValidationStatus.contentAccepted ? 'Đạt chuẩn' : 'Bị chặn/Lọc'}
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded border ${
+                  activeRoadmap.aiValidationStatus.aiChangesApplied && !activeRoadmap.aiValidationStatus.fallbackUsed
+                    ? 'bg-indigo-100 text-indigo-900 border-indigo-200'
+                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                }`}
+              >
+                {activeRoadmap.aiValidationStatus.fallbackUsed
+                  ? 'Fallback về Engine chuẩn'
+                  : activeRoadmap.aiValidationStatus.aiChangesApplied
+                  ? 'Đã áp dụng tinh chỉnh AI'
+                  : 'Không có thay đổi AI'}
+              </span>
+            </div>
+          )}
           {aiNotice && (
             <p className="text-[11px] text-amber-800 font-medium pt-1 border-t border-indigo-200/60">
               {aiNotice}
@@ -700,9 +959,28 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                             key={tIdx}
                             className="p-3.5 rounded-xl bg-slate-50/90 border border-slate-200/80 text-xs space-y-1.5"
                           >
-                            <div className="flex items-center justify-between gap-2 border-b border-slate-200/70 pb-1.5">
-                              <span className="font-bold text-slate-900">{task.subjectOrCompetency}</span>
-                              <span className="text-[11px] font-semibold text-indigo-700 tabular-nums shrink-0">
+                            <div className="flex items-start justify-between gap-2 border-b border-slate-200/70 pb-1.5">
+                              <div>
+                                <span className="font-bold text-slate-900 block">
+                                  {task.subjectOrCompetency}
+                                </span>
+                                {(task.priority || task.examTimeframe || task.targetExamDate) && (
+                                  <span className="text-[10px] font-semibold text-slate-500">
+                                    {task.priority === 'High'
+                                      ? 'Ưu tiên cao'
+                                      : task.priority === 'Medium'
+                                      ? 'Ưu tiên trung bình'
+                                      : task.priority === 'Low'
+                                      ? 'Bổ trợ'
+                                      : ''}
+                                    {task.examTimeframe && task.examTimeframe !== 'unknown'
+                                      ? `${task.priority ? ' · ' : ''}Mốc: ${task.examTimeframe}`
+                                      : ''}
+                                    {task.targetExamDate ? ` (${task.targetExamDate})` : ''}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] font-semibold text-indigo-700 tabular-nums shrink-0 text-right">
                                 {task.estimatedDuration}
                               </span>
                             </div>
@@ -712,6 +990,11 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                                 {task.topicFocus}
                               </span>
                             </div>
+                            {task.aiSuggestionNote && (
+                              <div className="text-[11px] text-indigo-900 bg-indigo-50/80 p-1.5 rounded border border-indigo-200/70">
+                                <strong>Gợi ý AI bổ sung:</strong> {task.aiSuggestionNote}
+                              </div>
+                            )}
                             <div className="text-[11px] text-slate-700">
                               <strong className="text-slate-800">Mục tiêu:</strong> {task.specificGoal}
                             </div>
@@ -721,6 +1004,11 @@ export const LearningRoadmapView: React.FC<LearningRoadmapViewProps> = ({
                             <div className="text-[11px] text-emerald-900 bg-emerald-50/70 p-2 rounded-lg border border-emerald-200/70">
                               <strong>Kiểm chứng:</strong> {task.verificationMethod}
                             </div>
+                            {task.allocationTradeoffNote && (
+                              <div className="text-[10px] text-amber-800 italic">
+                                ⚠ {task.allocationTradeoffNote}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
