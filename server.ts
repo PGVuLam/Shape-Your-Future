@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { adminRouter } from './server/adminRoutes';
 import { publicRouter } from './server/publicRoutes';
 import { adminDataService } from './server/adminDataService';
+import { validateAndMergeAIRoadmap } from './src/engine/roadmapValidator';
 
 dotenv.config();
 
@@ -249,12 +250,15 @@ ${recs.length > 0 ? recs.slice(0, 5).map((r: any, idx: number) => {
 - Mức độ sẵn sàng / tương thích kỹ năng: ${context?.skillGapAnalysis?.overallReadiness !== undefined ? `${context.skillGapAnalysis.overallReadiness}%` : 'Đang phát triển tốt'}
 
 8. LỘ TRÌNH RÈN LUYỆN NGHỀ NGHIỆP HÀNH ĐỘNG (LEARNING ROADMAP):
+- Giai đoạn người học: ${context?.roadmapSummary?.stageLabel || profile.grade || profile.ageGroup || '15-18'}
+- Phân bổ thời gian: ${context?.roadmapSummary?.allocationSummary || 'Linh hoạt theo hồ sơ và thời điểm thi'}
+- Kỳ thi đã chọn: ${(context?.roadmapSummary?.plannedExams && context.roadmapSummary.plannedExams.length > 0) ? context.roadmapSummary.plannedExams.join(', ') : (context?.roadmapSummary?.needsExamConfirmation ? 'Chưa xác nhận kỳ thi tham gia (cần hỏi lại, không tự mặc định)' : 'Theo nhóm tuổi hiện tại')}
 ${(context?.roadmapSummary?.phases && context.roadmapSummary.phases.length > 0) ? context.roadmapSummary.phases.map((p: any, idx: number) => {
-  return `  * Giai đoạn ${idx + 1}: ${p.name} (Thời gian: ${p.duration || '2-3 tháng'})
+  return `  * Giai đoạn ${idx + 1}: ${p.name} (Thời gian: ${p.duration || 'Theo mục tiêu'})
     - Trọng tâm: ${p.focus || 'Nền tảng'}
     - Hành động then chốt: ${(p.keyActions || []).join(', ')}
-    - Cột mốc đầu ra: ${p.milestone || 'Hoàn thành mini-project'}`;
-}).join('\n') : '  * Lộ trình tổng thể: Giai đoạn 1 (Nền tảng lý thuyết & ngoại ngữ) → Giai đoạn 2 (Dự án thực tế & kỹ năng chuyên môn) → Giai đoạn 3 (Thực tập & đồ án tốt nghiệp).'}
+    - Cột mốc đầu ra: ${p.milestone || 'Hoàn thành mục tiêu giai đoạn'}`;
+}).join('\n') : '  * Lộ trình cá nhân hóa theo độ tuổi và mục tiêu học tập.'}
 
 9. PHÂN TÍCH TÁC ĐỘNG CỦA AI & XU HƯỚNG TƯƠNG LAI 3–5 NĂM (AI IMPACT & 3-5 YEARS OUTLOOK):
 - Khung thời gian dự báo: 3–5 năm (định hướng năng lực, không cam kết việc làm cố định).
@@ -806,7 +810,7 @@ ${scoreEvals.join('\n\n')}
           ];
         }
 
-        // INTENT 5: Skills & Learning Roadmap
+        // INTENT 5: Skills & Learning Roadmap (Synced with Hybrid Roadmap Engine)
         else if (
           q.includes('kỹ năng') ||
           q.includes('học gì') ||
@@ -814,23 +818,28 @@ ${scoreEvals.join('\n\n')}
           q.includes('lộ trình') ||
           q.includes('bắt đầu')
         ) {
-          reply = `Chào **${name}**! Để trở thành một chuyên gia xuất sắc trong ngành **${careerTitle}**, bạn nên xây dựng lộ trình rèn luyện 3 giai đoạn:
+          const roadmapCtx = req.body?.context?.roadmapSummary;
+          if (roadmapCtx && Array.isArray(roadmapCtx.phases) && roadmapCtx.phases.length > 0) {
+            const phaseLines = roadmapCtx.phases
+              .map((ph: any, i: number) => `**Giai đoạn ${i + 1}: ${ph.name}** (${ph.duration})\n• Trọng tâm: ${ph.focus}\n• Kỹ năng: ${(ph.keyActions || []).join(', ')}\n• Cột mốc: ${ph.milestone}`)
+              .join('\n\n');
+            reply = `Chào **${name}**! Dựa trên hồ sơ thực tế của bạn cho ngành **${careerTitle}**:
+${roadmapCtx.stageLabel ? `- Giai đoạn: **${roadmapCtx.stageLabel}**` : ''}
+${roadmapCtx.allocationSummary ? `- Phân bổ: ${roadmapCtx.allocationSummary}` : ''}
+${roadmapCtx.needsExamConfirmation ? '- Lưu ý: Bạn chưa xác nhận danh sách kỳ thi tham gia (THPT / HSA / V-ACT / TSA).' : ''}
 
-🚀 **Giai đoạn 1: Chuẩn bị ngay trong giai đoạn THPT (3 - 6 tháng tới):**
-1. **Ngoại ngữ (Tiếng Anh chuyên ngành):** Mục tiêu đạt tối thiểu IELTS 6.0 - 6.5. Toàn bộ tài liệu, datasheet linh kiện và cộng đồng kỹ thuật quốc tế đều sử dụng Tiếng Anh.
-2. **Nền tảng Toán học & Khoa học:** Giữ vững điểm môn Toán (đại số tuyến tính, giải tích) và môn khoa học tự nhiên cốt lõi.
-3. **Làm quen lập trình / kỹ năng căn bản:** Thử tự học ngôn ngữ lập trình hoặc công cụ chuyên ngành cơ bản qua các khóa học trực tuyến miễn phí.
+${phaseLines}`;
+          } else {
+            reply = `Chào **${name}**! Để chuẩn bị hiệu quả cho ngành **${careerTitle}**, bạn nên bám sát lộ trình theo đúng độ tuổi và mục tiêu hiện tại:
 
-🛠️ **Giai đoạn 2: Năm 1 - Năm 2 Đại học / Cao đẳng (Nền tảng cốt lõi):**
-- Làm chủ kỹ thuật chuyên ngành căn bản, tham gia câu lạc bộ học thuật hoặc dự án nghiên cứu khoa học tại trường.
-
-💻 **Giai đoạn 3: Năm 3 - Năm 4 (Chuyên sâu & Thực chiến):**
-- Làm dự án thực tế, thực tập tại doanh nghiệp và xây dựng portfolio sản phẩm cá nhân.`;
+🚀 **Giai đoạn Trước mắt:** Củng cố môn học nền tảng theo khối/kỳ thi bạn dự định tham gia, rèn thói quen tự học và làm bài kiểm tra chẩn đoán nếu chưa có điểm nền.
+🛠️ **Giai đoạn Chuyển tiếp / Thực hành:** Bổ sung từng bước các kỹ năng còn thiếu và thực hiện sản phẩm thực tế nhỏ.`;
+          }
 
           suggestedFollowUps = [
-            'Có những khóa học trực tuyến miễn phí nào tốt để tự học?',
-            'Làm thế nào để duy trì kỷ luật tự học mỗi ngày?',
-            'Tính cách của tôi có lợi thế gì khi học chuyên sâu?'
+            'Làm sao điều chỉnh tỷ lệ ôn thi và kỹ năng phù hợp với quỹ thời gian?',
+            'Nếu chưa có điểm thi thử thì nên bắt đầu đánh giá từ đâu?',
+            'Sau kỳ thi nên chuẩn bị kỹ năng chuyên ngành nào trước?'
           ];
         }
 
@@ -956,6 +965,200 @@ Tôi luôn ở đây để đồng hành cùng bạn. Bạn có muốn đi sâu 
       console.warn('AI extraction endpoint error:', err?.message || err);
       res.status(500).json({ error: 'Failed to extract data via AI' });
     }
+  });
+
+  // Hybrid AI Roadmap Refinement API (Deterministic Engine -> AI Refinement -> Post-Validation Guard)
+  app.post('/api/ai/roadmap', aiRateLimitMiddleware, async (req, res) => {
+    const { profile, career, baseRoadmap, skillGap, llmConfig } = req.body || {};
+
+    if (!baseRoadmap || !Array.isArray(baseRoadmap.phases)) {
+      return res.status(400).json({ error: 'baseRoadmap is required' });
+    }
+
+    const plannedExams = Array.isArray(baseRoadmap.plannedExams) ? baseRoadmap.plannedExams : [];
+    const examSummaryText =
+      plannedExams.length > 0
+        ? `CÁC KỲ THI ĐƯỢC CHỌN DUY NHẤT: ${plannedExams.join(', ')}`
+        : baseRoadmap.needsExamConfirmation
+        ? 'CHƯA XÁC NHẬN KỲ THI: Tuyệt đối KHÔNG tự ý thêm lịch ôn HSA, V-ACT, TSA hay THPT chi tiết.'
+        : 'Không áp dụng kỳ thi tuyển sinh THPT/ĐH.';
+
+    const systemInstruction = `Bạn là Chuyên gia Cố vấn Lộ trình Học tập & Hướng nghiệp tại Việt Nam.
+Nhiệm vụ của bạn là TINH CHỈNH CÂU CHỮ, PHƯƠNG PHÁP HỌC VÀ MỤC TIÊU HÀNH ĐỘNG cho lộ trình nền (baseRoadmap) sao cho sát với hồ sơ học viên nhất.
+
+RÀNG BUỘC BẮT BUỘC (VI PHẠM SẼ BỊ HỆ THỐNG TỪ CHỐI):
+1. KHÔNG thay đổi số lượng giai đoạn, phaseNumber, duration, stageCategory, hoặc tỷ lệ % (examRatio / skillRatio).
+2. ${examSummaryText} — TUYỆT ĐỐI KHÔNG tự ý nhắc đến hoặc thêm kỳ thi nào ngoài danh sách đã chọn.
+3. KHÔNG tự bịa điểm số thi, ngày thi cụ thể, điểm chuẩn trường đại học, hay phần trăm cơ hội đỗ.
+4. Nếu học sinh chưa có dữ liệu chuyên đề yếu (hasTopicDiagnostic = false), KHÔNG tự đoán chuyên đề yếu mà giữ hướng dẫn làm bài kiểm tra chẩn đoán/thi thử.
+5. Nếu giai đoạn có stageCategory === 'pre-exam', CHỈ tập trung ôn thi + kỹ năng nền tảng (quản lý thời gian, đọc hiểu, logic, tiếng Anh học thuật). KHÔNG đưa kỹ năng chuyên ngành nặng (React, Docker, Machine Learning, Capstone) vào giai đoạn Trước kỳ thi.
+6. Chỉ trả về đúng 1 JSON object hợp lệ theo cấu trúc:
+{
+  "tailoredNote": "string ngắn gọn cá nhân hóa",
+  "phases": [
+    {
+      "phaseNumber": number,
+      "objectives": ["string"],
+      "recommendedActivities": ["string"],
+      "milestone": "string",
+      "studyTasks": [
+        {
+          "topicFocus": "string (chỉ tinh chỉnh nếu hasTopicDiagnostic=true)",
+          "specificGoal": "string",
+          "studyMethod": "string",
+          "verificationMethod": "string"
+        }
+      ]
+    }
+  ]
+}`;
+
+    const userPromptPayload = JSON.stringify({
+      student: {
+        name: profile?.name || 'Học viên',
+        age: profile?.age,
+        ageGroup: profile?.ageGroup,
+        grade: profile?.grade || baseRoadmap.gradeDetected,
+        academicGPA: profile?.academicGPA,
+        favoriteSubjects: profile?.favoriteSubjects || [],
+        confidentSubjects: profile?.confidentSubjects || [],
+        studyHoursPerWeek: profile?.availableStudyTimeHoursPerWeek || 10,
+        examScores: {
+          hsaScore: profile?.examScores?.hsaScore,
+          vactScore: profile?.examScores?.vactScore,
+          tsaScore: profile?.examScores?.tsaScore,
+          thptScore: profile?.examScores?.thptScore,
+          thptCombo: profile?.examScores?.thptCombo,
+          plannedExams,
+          timeUntilExam: profile?.examScores?.timeUntilExam,
+          studyGoal: profile?.examScores?.studyGoal,
+          weakTopics: profile?.examScores?.weakTopics || []
+        }
+      },
+      targetCareer: {
+        title: career?.title || baseRoadmap.careerTitle,
+        cluster: career?.careerCluster,
+        futureTrends: career?.futureTrends
+      },
+      skillGapSummary: skillGap,
+      baseRoadmap: {
+        stageLabel: baseRoadmap.stageLabel,
+        allocation: baseRoadmap.allocation,
+        tailoredNote: baseRoadmap.tailoredNote,
+        phases: baseRoadmap.phases.map((p: any) => ({
+          phaseNumber: p.phaseNumber,
+          name: p.name,
+          duration: p.duration,
+          stageCategory: p.stageCategory,
+          objectives: p.objectives,
+          recommendedActivities: p.recommendedActivities,
+          milestone: p.milestone,
+          studyTasks: p.studyTasks
+        }))
+      }
+    });
+
+    const isCustomLocal = llmConfig?.provider === 'custom' || !!llmConfig?.customEndpoint;
+
+    // 1. Try Custom/Local Ollama when configured
+    if (isCustomLocal) {
+      const cleanEndpoint = (llmConfig?.customEndpoint || 'http://localhost:11434').replace(/\/+$/, '');
+      const targetModel = llmConfig?.modelName || 'qwen2.5:7b';
+      const messages = [
+        { role: 'system', content: systemInstruction },
+        { role: 'user', content: `Hãy tinh chỉnh JSON lộ trình từ dữ liệu sau:\n${userPromptPayload}` }
+      ];
+
+      try {
+        let localRes = await fetch(`${cleanEndpoint}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: targetModel,
+            messages,
+            format: 'json',
+            stream: false
+          }),
+          signal: AbortSignal.timeout(18000)
+        });
+
+        if (!localRes.ok && (localRes.status === 404 || localRes.status === 405)) {
+          localRes = await fetch(`${cleanEndpoint}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: targetModel,
+              messages,
+              temperature: 0.35,
+              max_tokens: 1800
+            }),
+            signal: AbortSignal.timeout(18000)
+          });
+        }
+
+        if (localRes.ok) {
+          const data = await localRes.json();
+          const rawText = data?.message?.content || data?.choices?.[0]?.message?.content || data?.response || '';
+          const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, `Local AI: ${targetModel}`);
+          return res.json({
+            roadmap: validation.roadmap,
+            usedAI: validation.validated,
+            modelUsed: validation.validated ? `Local AI: ${targetModel}` : 'EduPath Engine (Fallback)',
+            errorNotice: validation.validated ? undefined : validation.warnings[0]
+          });
+        }
+      } catch (localErr: any) {
+        console.warn('[Roadmap AI] Local Ollama unavailable:', localErr?.message || localErr);
+      }
+
+      return res.json({
+        roadmap: { ...baseRoadmap, source: 'engine' },
+        usedAI: false,
+        modelUsed: 'EduPath Engine (Ollama unavailable)',
+        errorNotice: `Máy chủ Local AI (${cleanEndpoint}) chưa phản hồi — đang dùng lộ trình chuẩn hóa từ Engine.`
+      });
+    }
+
+    // 2. Gemini 4 Hydrogen (Default Cloud Model per Gemini API guidelines)
+    const ai = getAIClient();
+    if (ai) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: `Hãy tinh chỉnh JSON lộ trình từ dữ liệu sau:\n${userPromptPayload}` }]
+            }
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.35,
+            maxOutputTokens: 2048,
+            responseMimeType: 'application/json'
+          }
+        });
+
+        const rawText = response.text || '';
+        const validation = validateAndMergeAIRoadmap(baseRoadmap, rawText, 'Gemini 4 Hydrogen');
+        return res.json({
+          roadmap: validation.roadmap,
+          usedAI: validation.validated,
+          modelUsed: validation.validated ? 'Gemini 4 Hydrogen' : 'EduPath Engine (Fallback)',
+          errorNotice: validation.validated ? undefined : validation.warnings[0]
+        });
+      } catch (gemErr: any) {
+        console.warn('[Roadmap AI] Gemini error, falling back to engine:', gemErr?.message || gemErr);
+      }
+    }
+
+    // 3. Clean Deterministic Fallback
+    return res.json({
+      roadmap: { ...baseRoadmap, source: 'engine' },
+      usedAI: false,
+      modelUsed: 'EduPath Engine (Offline)',
+      errorNotice: 'Chưa kết nối dịch vụ AI — đang hiển thị lộ trình chuẩn hóa từ Engine.'
+    });
   });
 
   // Mount Vite or static dist

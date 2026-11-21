@@ -55,6 +55,10 @@ export interface SelfRatedSkill {
   category: 'Technical' | 'Soft' | 'Domain';
 }
 
+export type PlannedExamCode = 'THPT' | 'HSA' | 'V-ACT' | 'TSA';
+
+export type ExamTimeframe = '< 1 tháng' | '1–3 tháng' | '3–6 tháng' | '6–9 tháng' | '> 9 tháng' | 'unknown';
+
 export interface ExamProfile {
   hsaScore?: number; // HSA ĐHQG Hà Nội (thang 150)
   vactScore?: number; // V-ACT ĐHQG TP.HCM (thang 1200)
@@ -63,6 +67,11 @@ export interface ExamProfile {
   thptCombo?: string; // Khối thi (A00, A01, B00, C00, D01, ...)
   thptScore?: number; // Điểm thi THPT QG ước tính hoặc thực tế (thang 30)
   awards?: string[]; // Chứng chỉ / Giải thưởng (IELTS, HSG, KHKT...)
+  plannedExams?: PlannedExamCode[]; // Chỉ các kỳ thi học sinh thực sự dự định tham gia
+  timeUntilExam?: ExamTimeframe; // Khoảng thời gian còn lại tới kỳ thi mục tiêu
+  studyGoal?: string; // Mục tiêu học tập / xét tuyển (VD: "Đạt 26+ khối A01", "Nâng nền tảng Toán")
+  weakTopics?: string[]; // Chuyên đề yếu thực tế do học sinh tự khai báo hoặc từ đánh giá
+  customExamRatio?: number; // Tỷ lệ % ôn thi do người dùng tự điều chỉnh (0-100)
 }
 
 export type LLMProviderType = 'local' | 'gemini' | 'custom';
@@ -285,13 +294,28 @@ export interface RoadmapMilestoneStep {
   milestoneGoal: string;
 }
 
+export interface StudyTaskItem {
+  subjectOrCompetency: string; // (1) Môn học / Năng lực mục tiêu
+  topicFocus: string; // (2) Chuyên đề trọng tâm (hoặc nêu rõ chưa có dữ liệu chuyên đề yếu)
+  hasTopicDiagnostic: boolean; // True nếu lấy từ dữ liệu thực của học sinh
+  specificGoal: string; // (3) Mục tiêu đầu ra cụ thể
+  studyMethod: string; // (4) Phương pháp học / luyện đề / phân tích lỗi
+  estimatedDuration: string; // (5) Thời lượng dự kiến
+  verificationMethod: string; // (6) Cách kiểm chứng hoàn thành
+}
+
 export interface RoadmapPhase {
   phaseNumber: number;
   name: string;
   duration: string;
   timeframe?: '0–3 months' | '3–6 months' | '6–12 months' | string;
+  stageCategory?: 'pre-exam' | 'post-exam' | 'highschool-prep' | 'exploration' | 'career-specialization' | 'transition';
+  examFocus?: PlannedExamCode[];
   objectives: string[];
   skillsToLearn: string[];
+  foundationalSkills?: string[];
+  specializedSkills?: string[];
+  studyTasks?: StudyTaskItem[];
   projects: string[];
   recommendedActivities: string[];
   milestone: string;
@@ -302,6 +326,21 @@ export interface LearningRoadmap {
   careerId: string;
   careerTitle: string;
   targetAgeGroup: AgeGroup;
+  stageLabel?: string;
+  gradeDetected?: string;
+  allocation?: {
+    examRatio: number;
+    skillRatio: number;
+    isDefault: boolean;
+    isUserAdjusted?: boolean;
+    rationale: string;
+  };
+  needsExamConfirmation?: boolean;
+  isTimelineEstimated?: boolean;
+  plannedExams?: PlannedExamCode[];
+  source?: 'engine' | 'ai-hybrid';
+  modelUsed?: string;
+  validationWarnings?: string[];
   phases: RoadmapPhase[];
   tailoredNote: string;
 }

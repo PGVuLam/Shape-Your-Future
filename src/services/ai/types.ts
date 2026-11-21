@@ -83,9 +83,16 @@ export interface CounselorContextPayload {
     criticalGaps: string[];
   };
   roadmapSummary?: {
+    stageLabel?: string;
+    allocationSummary?: string;
+    plannedExams?: string[];
+    needsExamConfirmation?: boolean;
+    isTimelineEstimated?: boolean;
+    tailoredNote?: string;
     phases: Array<{
       name: string;
       duration: string;
+      stageCategory?: string;
       focus: string;
       keyActions: string[];
       milestone?: string;

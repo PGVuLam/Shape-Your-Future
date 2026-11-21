@@ -17,7 +17,7 @@ import {
   Layers,
   FileText
 } from 'lucide-react';
-import { UserProfile, AgeGroup, ExamProfile } from '../types';
+import { UserProfile, AgeGroup, ExamProfile, PlannedExamCode, ExamTimeframe } from '../types';
 import { VIETNAM_PROVINCES } from '../data/vietnamProvinces';
 import { DEMO_PROFILES } from '../data/demoProfiles';
 import { AGE_GROUPS_CONFIG, detectAgeGroupFromNumber, createEmptyProfile } from '../utils/ageGroupUtils';
@@ -56,6 +56,10 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
     thptCombo: string;
     thptScore: string;
     awards: string[];
+    plannedExams: PlannedExamCode[];
+    timeUntilExam: ExamTimeframe | '';
+    studyGoal: string;
+    weakTopicsText: string;
     preferredWorkEnvironment: string[];
     careerPriorities: string[];
     careerReadiness: 'clear' | 'undecided' | 'considering' | 'exploring';
@@ -85,6 +89,10 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
     thptCombo: profile.examScores?.thptCombo || '',
     thptScore: profile.examScores?.thptScore ? profile.examScores.thptScore.toString() : '',
     awards: profile.examScores?.awards || [],
+    plannedExams: profile.examScores?.plannedExams || [],
+    timeUntilExam: profile.examScores?.timeUntilExam || '',
+    studyGoal: profile.examScores?.studyGoal || '',
+    weakTopicsText: (profile.examScores?.weakTopics || []).join(', '),
     preferredWorkEnvironment: profile.preferredWorkEnvironment || [],
     careerPriorities: profile.careerPriorities || [],
     careerReadiness: profile.careerReadiness || 'exploring',
@@ -118,6 +126,10 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
       thptCombo: profile.examScores?.thptCombo || '',
       thptScore: profile.examScores?.thptScore ? profile.examScores.thptScore.toString() : '',
       awards: profile.examScores?.awards || [],
+      plannedExams: profile.examScores?.plannedExams || [],
+      timeUntilExam: profile.examScores?.timeUntilExam || '',
+      studyGoal: profile.examScores?.studyGoal || '',
+      weakTopicsText: (profile.examScores?.weakTopics || []).join(', '),
       preferredWorkEnvironment: profile.preferredWorkEnvironment || [],
       careerPriorities: profile.careerPriorities || [],
       careerReadiness: profile.careerReadiness || 'exploring',
@@ -178,6 +190,10 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
       thptCombo: '',
       thptScore: '',
       awards: [],
+      plannedExams: [],
+      timeUntilExam: '',
+      studyGoal: '',
+      weakTopicsText: '',
       preferredWorkEnvironment: [],
       careerPriorities: [],
       careerReadiness: 'exploring',
@@ -320,7 +336,12 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
         pedagogyScore: formData.pedagogyScore ? parseFloat(formData.pedagogyScore) : undefined,
         thptCombo: formData.thptCombo,
         thptScore: formData.thptScore ? parseFloat(formData.thptScore) : undefined,
-        awards: formData.awards
+        awards: formData.awards,
+        plannedExams: formData.plannedExams,
+        timeUntilExam: formData.timeUntilExam ? (formData.timeUntilExam as ExamTimeframe) : undefined,
+        studyGoal: formData.studyGoal.trim() || undefined,
+        weakTopics: formData.weakTopicsText.split(',').map(s => s.trim()).filter(Boolean),
+        customExamRatio: profile.examScores?.customExamRatio
       }
     };
 
@@ -383,6 +404,10 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
                 thptCombo: 'A00 (Toán, Lý, Hóa)',
                 thptScore: '26.5',
                 awards: ['IELTS 7.0', 'Giải Nhì HSG Tin học cấp Tỉnh'],
+                plannedExams: ['THPT', 'HSA', 'TSA'],
+                timeUntilExam: '3–6 tháng',
+                studyGoal: 'Đạt ngưỡng cạnh tranh khối A00 và HSA/TSA vào ngành Kỹ thuật',
+                weakTopicsText: '',
                 preferredWorkEnvironment: demo.preferredWorkEnvironment,
                 careerPriorities: demo.careerPriorities,
                 careerReadiness: 'undecided',
@@ -782,6 +807,88 @@ export const Step1ComprehensiveInfoView: React.FC<Step1ComprehensiveInfoViewProp
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
                 placeholder="Ví dụ: IELTS 7.0, Giải Ba HSG Tỉnh"
               />
+            </div>
+          </div>
+
+          {/* Planned Exams, Exam Timeline, Study Goal & Weak Topics (Strictly un-prefilled) */}
+          <div className="pt-3 border-t border-slate-100 space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="font-semibold text-slate-700">
+                Các kỳ thi bạn thực sự dự định tham gia (chỉ lập lịch ôn cho kỳ thi được chọn):
+              </span>
+              <span className="text-[11px] text-slate-400">Không bắt buộc chọn tất cả</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(['THPT', 'HSA', 'V-ACT', 'TSA'] as PlannedExamCode[]).map(code => {
+                const checked = formData.plannedExams.includes(code);
+                const labels: Record<PlannedExamCode, string> = {
+                  THPT: 'THPT Quốc gia',
+                  HSA: 'HSA (ĐHQG Hà Nội)',
+                  'V-ACT': 'V-ACT (ĐHQG TP.HCM)',
+                  TSA: 'TSA (Bách Khoa HN)'
+                };
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => {
+                      setFormData(prev => ({
+                        ...prev,
+                        plannedExams: checked
+                          ? prev.plannedExams.filter(x => x !== code)
+                          : [...prev.plannedExams, code]
+                      }));
+                    }}
+                    className={`px-3 py-1.5 rounded-xl font-semibold border transition-all cursor-pointer ${
+                      checked
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {checked ? '✓ ' : ''}{labels[code]}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Thời gian còn lại tới kỳ thi:</label>
+                <select
+                  value={formData.timeUntilExam}
+                  onChange={e => setFormData({ ...formData, timeUntilExam: e.target.value as ExamTimeframe | '' })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
+                >
+                  <option value="">-- Chưa xác định rõ --</option>
+                  <option value="< 1 tháng">&lt; 1 tháng</option>
+                  <option value="1–3 tháng">1–3 tháng</option>
+                  <option value="3–6 tháng">3–6 tháng</option>
+                  <option value="6–9 tháng">6–9 tháng</option>
+                  <option value="> 9 tháng">&gt; 9 tháng</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Mục tiêu học tập / điểm số:</label>
+                <input
+                  type="text"
+                  value={formData.studyGoal}
+                  onChange={e => setFormData({ ...formData, studyGoal: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
+                  placeholder="Ví dụ: Đạt 25+ khối A01 hoặc vào ngành CNTT"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">Chuyên đề còn yếu (nếu đã biết):</label>
+                <input
+                  type="text"
+                  value={formData.weakTopicsText}
+                  onChange={e => setFormData({ ...formData, weakTopicsText: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs"
+                  placeholder="Ví dụ: Hình học không gian, Đọc hiểu Tiếng Anh"
+                />
+              </div>
             </div>
           </div>
         </div>

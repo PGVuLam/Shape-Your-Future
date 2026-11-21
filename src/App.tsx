@@ -380,6 +380,7 @@ export default function App() {
                   onBackToStep3={() => setCurrentStep(3)}
                   onRestartExam={handleRestartExam}
                   onViewCareerDetail={setSelectedCareerForModal}
+                  onUpdateProfile={setActiveProfile}
                   llmConfig={llmConfig}
                   onUpdateLlmConfig={setLlmConfig}
                   onOpenAIModelModal={() => setIsAIModelModalOpen(true)}
@@ -422,6 +423,8 @@ export default function App() {
         }}
         onToggleCompare={() => {}}
         isCompared={false}
+        llmConfig={llmConfig}
+        onUpdateProfile={setActiveProfile}
       />
 
       {/* Scientific Research & Evaluation Inspector Modal (Admin / Jury Only) */}

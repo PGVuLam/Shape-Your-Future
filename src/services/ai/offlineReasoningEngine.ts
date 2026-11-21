@@ -244,7 +244,7 @@ ${scoreEvals.join('\n\n')}
   }
 
   // =========================================================================
-  // Intent 5: Skills & Learning Roadmap
+  // Intent 5: Skills & Learning Roadmap (Grounded in Hybrid Roadmap Engine)
   // =========================================================================
   else if (
     qLower.includes('kỹ năng') ||
@@ -253,27 +253,53 @@ ${scoreEvals.join('\n\n')}
     qLower.includes('chuẩn bị') ||
     qLower.includes('bắt đầu')
   ) {
+    const roadmap = context.roadmapSummary;
     const topMissing = context.userMissingSkills?.[0] || context.requiredSkills[0] || 'Kỹ năng chuyên môn nền tảng';
-    const sampleTask = context.tasks[0] || 'Xây dựng một module thực hành ứng dụng cơ bản';
 
-    reply = `Chào **${name}**! Ở lứa tuổi **${age} tuổi (${ageMeta.stageVi})**, lộ trình rèn luyện hiệu quả cho ngành **${careerTitle}** được chia thành 3 bước:
+    if (roadmap && roadmap.phases && roadmap.phases.length > 0) {
+      const headerInfo = [
+        roadmap.stageLabel ? `- 🧭 **Giai đoạn hiện tại:** ${roadmap.stageLabel}` : '',
+        roadmap.allocationSummary ? `- ⚖️ **Phân bổ thời gian:** ${roadmap.allocationSummary}` : '',
+        roadmap.plannedExams && roadmap.plannedExams.length > 0
+          ? `- 📝 **Kỳ thi đã chọn:** ${roadmap.plannedExams.join(', ')}`
+          : roadmap.needsExamConfirmation
+          ? `- ⚠️ **Cần xác nhận kỳ thi:** Bạn chưa chọn danh sách kỳ thi tham gia (THPT / HSA / V-ACT / TSA). Hãy xác nhận trong phần Lộ trình để có lịch ôn chi tiết.`
+          : ''
+      ]
+        .filter(Boolean)
+        .join('\n');
 
-🚀 **Giai đoạn 1: Xây dựng nền tảng (Ngay bây giờ):**
-1. **Kỹ năng ưu tiên hàng đầu:** **${topMissing}**. Dành thời gian tiếp cận khái niệm cơ bản qua các tài liệu học tập thực hành.
-2. **Củng cố môn học thế mạnh:** Duy trì kết quả tốt các môn ${context.profileContext.favoriteSubjects?.slice(0, 2).join(' và ') || 'Toán học & Công nghệ'}.
-3. **Ngoại ngữ chuyên ngành:** Rèn thói quen đọc tài liệu kỹ thuật bằng tiếng Anh.
+      const phaseBlocks = roadmap.phases
+        .map((ph, i) => {
+          return `**Giai đoạn ${i + 1}: ${ph.name}** (${ph.duration})\n• Trọng tâm: ${ph.focus}\n• Kỹ năng ưu tiên: ${(ph.keyActions || []).join(', ') || topMissing}\n• Cột mốc: ${ph.milestone || 'Hoàn thành mục tiêu giai đoạn'}`;
+        })
+        .join('\n\n');
 
-🛠️ **Giai đoạn 2: Thực hành ứng dụng (Trải nghiệm thực tế):**
-- Thử sức với bài tập thực hành: *${sampleTask}*.
-- Tham gia các câu lạc bộ học thuật, hoạt động nghiên cứu khoa học trẻ hoặc làm dự án nhỏ cùng bạn bè.
+      reply = `Chào **${name}**! Ở lứa tuổi **${age} tuổi (${ageMeta.stageVi})**, lộ trình cá nhân hóa cho ngành **${careerTitle}** được thiết kế như sau:
 
-🎯 **Giai đoạn 3: Hoàn thiện & Định vị:**
-- Tích lũy chứng chỉ chuyên môn, xây dựng portfolio sản phẩm thực tế để sẵn sàng ứng tuyển thực tập.`;
+${headerInfo}
+
+${phaseBlocks}
+
+*Lưu ý: Với học sinh Lớp 12, giai đoạn Trước kỳ thi ưu tiên ôn tập, luyện đề, làm bài thi thử chẩn đoán nếu chưa có điểm và chỉ học kỹ năng nền tảng; kỹ năng chuyên ngành sẽ bắt đầu ở giai đoạn Sau kỳ thi.*`;
+    } else {
+      const sampleTask = context.tasks[0] || 'Xây dựng một module thực hành ứng dụng cơ bản';
+      reply = `Chào **${name}**! Ở lứa tuổi **${age} tuổi (${ageMeta.stageVi})**, lộ trình rèn luyện hiệu quả cho ngành **${careerTitle}** gồm:
+
+🚀 **Giai đoạn 1: Xây dựng nền tảng (${topMissing}):**
+1. Làm quen khái niệm cốt lõi và củng cố môn học thế mạnh (${context.profileContext.favoriteSubjects?.slice(0, 2).join(' và ') || 'theo hồ sơ của bạn'}).
+2. Rèn luyện phương pháp tự học và đọc tài liệu nền tảng.
+
+🛠️ **Giai đoạn 2: Thực hành ứng dụng:**
+- Thử sức với bài tập thực tế: *${sampleTask}*.
+
+🎯 **Giai đoạn 3: Hoàn thiện Portfolio & Định vị nghề nghiệp.**`;
+    }
 
     suggestedQuestions = [
-      'Có những khóa học trực tuyến miễn phí nào phù hợp cho kỹ năng này?',
-      'Làm sao để vừa học tốt trên lớp vừa rèn luyện kỹ năng ngoài giờ?',
-      'Cách xây dựng portfolio học tập ấn tượng từ cấp 3?'
+      'Làm sao điều chỉnh tỷ lệ ôn thi và kỹ năng phù hợp với lịch học của em?',
+      'Nếu chưa có điểm thi thử thì nên bắt đầu kiểm tra năng lực ra sao?',
+      'Sau kỳ thi đại học nên chuẩn bị kỹ năng chuyên ngành nào trước?'
     ];
   }
 

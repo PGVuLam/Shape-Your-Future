@@ -88,15 +88,24 @@ export function buildCounselorContext(
     }
   }
 
-  // 4. Compute Learning Roadmap for the target career
+  // 4. Compute Learning Roadmap for the target career (Age & Exam-Timeline Hybrid Engine)
   let roadmapSummary: CounselorContextPayload['roadmapSummary'] = undefined;
   if (mainCareer) {
     try {
       const roadmap = generateLearningRoadmap(profile, mainCareer);
       roadmapSummary = {
+        stageLabel: roadmap.stageLabel,
+        allocationSummary: roadmap.allocation
+          ? `${roadmap.allocation.examRatio}% ôn thi / ${roadmap.allocation.skillRatio}% kỹ năng (${roadmap.allocation.rationale})`
+          : undefined,
+        plannedExams: roadmap.plannedExams,
+        needsExamConfirmation: roadmap.needsExamConfirmation,
+        isTimelineEstimated: roadmap.isTimelineEstimated,
+        tailoredNote: roadmap.tailoredNote,
         phases: roadmap.phases.slice(0, 4).map(p => ({
           name: p.name,
           duration: p.duration,
+          stageCategory: p.stageCategory,
           focus: p.objectives.slice(0, 2).join('; '),
           keyActions: p.skillsToLearn.slice(0, 4),
           milestone: p.milestone

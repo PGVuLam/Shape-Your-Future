@@ -31,7 +31,8 @@ import {
   Lightbulb,
   Layers,
   GitCompare,
-  X
+  X,
+  Map
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { toCanvas, toPng } from 'html-to-image';
@@ -41,6 +42,7 @@ import { generateRecommendations } from '../engine/recommendationEngine';
 import { VIETNAM_UNIVERSITIES, UniversityInfo } from '../data/vietnamUniversities';
 import { askAICounselor, ChatMessage } from '../services/aiCounselorService';
 import { CareerComparisonView } from './CareerComparisonView';
+import { LearningRoadmapView } from './LearningRoadmapView';
 import { useLanguage } from '../context/LanguageContext';
 
 interface Step4ComprehensiveReportViewProps {
@@ -48,6 +50,7 @@ interface Step4ComprehensiveReportViewProps {
   onBackToStep3: () => void;
   onRestartExam: () => void;
   onViewCareerDetail?: (career: Career) => void;
+  onUpdateProfile?: (updated: UserProfile) => void;
   llmConfig?: LLMConfig;
   onUpdateLlmConfig?: (config: LLMConfig) => void;
   onOpenAIModelModal?: () => void;
@@ -58,6 +61,7 @@ export const Step4ComprehensiveReportView: React.FC<Step4ComprehensiveReportView
   onBackToStep3,
   onRestartExam,
   onViewCareerDetail,
+  onUpdateProfile,
   llmConfig: externalLlmConfig,
   onUpdateLlmConfig,
   onOpenAIModelModal
@@ -127,8 +131,9 @@ export const Step4ComprehensiveReportView: React.FC<Step4ComprehensiveReportView
     return recommendations.slice(0, 5);
   }, [recommendations]);
 
-  // Career Comparison state
+  // Career Comparison & Personalized Hybrid Roadmap modals
   const [showCompareModal, setShowCompareModal] = useState<boolean>(false);
+  const [showRoadmapModal, setShowRoadmapModal] = useState<boolean>(false);
   const [comparedCareerIds, setComparedCareerIds] = useState<string[]>(() => {
     return recommendations.slice(0, 3).map(r => r.careerId);
   });
@@ -643,7 +648,15 @@ Bạn cần tư vấn về chiến lược đăng ký trường đại học, ph
               Tính điểm khoa học dựa trên trọng số chuẩn hóa: <strong>RIASEC (30%) + Năng lực học tập & Điểm thi (30%) + Kỹ năng (25%) + MBTI bổ trợ (5%) + Kỳ vọng & Môi trường (10%)</strong>.
             </p>
           </div>
-          <div className="flex items-center gap-2 self-start sm:self-center" data-pdf-ignore="true">
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-center" data-pdf-ignore="true">
+            <button
+              onClick={() => setShowRoadmapModal(true)}
+              className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
+              title="Mở Lộ trình Học tập theo Độ tuổi, Kỳ thi & Tinh chỉnh AI"
+            >
+              <Map className="w-3.5 h-3.5 text-amber-300" />
+              <span>Lộ trình Học tập & Tinh chỉnh AI</span>
+            </button>
             <button
               onClick={() => setShowCompareModal(true)}
               className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center space-x-1.5 shadow-sm transition-all cursor-pointer"
@@ -1306,6 +1319,44 @@ Bạn cần tư vấn về chiến lược đăng ký trường đại học, ph
                     onViewCareerDetail(c);
                   }
                 }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Lộ trình Học tập Cá nhân hóa & Tinh chỉnh AI */}
+      {showRoadmapModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6" data-pdf-ignore="true">
+          <div className="bg-white rounded-3xl max-w-6xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 border border-slate-200">
+            <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
+                  <Map className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm sm:text-base">
+                    Lộ trình Học tập Thích ứng theo Độ tuổi, Kỳ thi & Tinh chỉnh AI
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    Kết hợp Engine chuẩn hóa và AI tinh chỉnh theo hồ sơ thực tế
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowRoadmapModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-slate-50/50">
+              <LearningRoadmapView
+                profile={profile}
+                recommendations={recommendations}
+                onSelectCareer={() => {}}
+                onUpdateProfile={onUpdateProfile}
+                llmConfig={llmConfig}
               />
             </div>
           </div>

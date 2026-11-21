@@ -15,11 +15,11 @@ import {
   ShieldCheck,
   Target
 } from 'lucide-react';
-import { Career, UserProfile, RecommendationScore } from '../types';
+import { Career, UserProfile, RecommendationScore, LLMConfig } from '../types';
 import { analyzeSkillGap } from '../engine/skillGapEngine';
-import { generateLearningRoadmap } from '../engine/roadmapEngine';
 import { analyzeAIImpactAndFutureTrends } from '../engine/aiImpactEngine';
 import { RIASECRadarChart } from './RIASECRadarChart';
+import { LearningRoadmapView } from './LearningRoadmapView';
 import { useLanguage } from '../context/LanguageContext';
 
 interface CareerDetailModalProps {
@@ -30,6 +30,8 @@ interface CareerDetailModalProps {
   onOpenCounselor: (career: Career) => void;
   onToggleCompare: (careerId: string) => void;
   isCompared: boolean;
+  llmConfig?: LLMConfig;
+  onUpdateProfile?: (updated: UserProfile) => void;
 }
 
 export const CareerDetailModal: React.FC<CareerDetailModalProps> = ({
@@ -39,7 +41,9 @@ export const CareerDetailModal: React.FC<CareerDetailModalProps> = ({
   onClose,
   onOpenCounselor,
   onToggleCompare,
-  isCompared
+  isCompared,
+  llmConfig,
+  onUpdateProfile
 }) => {
   const { language, t, getCareerTitle, getCareerCluster, getCareerDesc } = useLanguage();
   const [activeTab, setActiveTab] = useState<'overview' | 'skills' | 'roadmap' | 'education' | 'experiments'>('overview');
@@ -47,7 +51,6 @@ export const CareerDetailModal: React.FC<CareerDetailModalProps> = ({
   if (!career) return null;
 
   const skillGap = analyzeSkillGap(profile, career);
-  const roadmap = generateLearningRoadmap(profile, career, skillGap);
   const aiImpactAnalysis = analyzeAIImpactAndFutureTrends(career, profile, skillGap);
   const locTitle = getCareerTitle(career.id, career.title);
   const locCluster = getCareerCluster(career.id, career.careerCluster);
@@ -442,89 +445,17 @@ export const CareerDetailModal: React.FC<CareerDetailModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: ROADMAP */}
+          {/* TAB 3: ROADMAP (Canonical Shared LearningRoadmapView) */}
           {activeTab === 'roadmap' && (
-            <div className="space-y-6 pt-2">
-              <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-xl space-y-1">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 uppercase tracking-wide">
-                    <Map className="w-4 h-4 text-indigo-600" />
-                    <span>Lộ trình Rèn luyện Cá nhân hóa theo Lứa tuổi</span>
-                  </h4>
-                  <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold">
-                    {roadmap.phases.length} giai đoạn rèn luyện
-                  </span>
-                </div>
-                <p className="text-xs text-indigo-800 leading-relaxed">
-                  {roadmap.tailoredNote}
-                </p>
-              </div>
-
-              {/* Roadmap Phases */}
-              <div className="space-y-4">
-                {roadmap.phases.map((phase) => (
-                  <div
-                    key={phase.phaseNumber}
-                    className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-200/80 pb-2">
-                      <div className="flex items-center space-x-2">
-                        <span className="w-6 h-6 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center">
-                          {phase.phaseNumber}
-                        </span>
-                        <h5 className="font-bold text-slate-900 text-xs sm:text-sm">
-                          {phase.name}
-                        </h5>
-                      </div>
-                      <span className="text-[11px] font-semibold text-slate-500 bg-white px-2.5 py-0.5 rounded-full border border-slate-200 self-start sm:self-center">
-                        Thời lượng: {phase.duration}
-                      </span>
-                    </div>
-
-                    {/* Objectives */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">MỤC TIÊU GIAI ĐOẠN:</span>
-                      <ul className="list-disc list-inside text-xs text-slate-700 space-y-0.5">
-                        {phase.objectives.map((obj, i) => (
-                          <li key={i}>{obj}</li>
-                        ))}
-                      </ul>
-                    </div>
-
-                    {/* Skills to Learn */}
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block">KỸ NĂNG CẦN TÍCH LŨY:</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {phase.skillsToLearn.map((s, i) => (
-                          <span key={i} className="px-2 py-0.5 rounded-md bg-white border border-indigo-200 text-indigo-900 text-[11px] font-medium">
-                            {s}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Projects or Recommended Activities */}
-                    {phase.projects && phase.projects.length > 0 && (
-                      <div className="p-3 bg-white rounded-lg border border-slate-200 text-xs space-y-1">
-                        <span className="font-bold text-slate-800 text-[11px]">Dự án rèn luyện thực tế:</span>
-                        <ul className="list-disc list-inside text-slate-600 space-y-0.5 text-[11px]">
-                          {phase.projects.map((proj, i) => (
-                            <li key={i}>{proj}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {/* Milestone */}
-                    {phase.milestone && (
-                      <div className="p-2.5 bg-emerald-50 rounded-lg border border-emerald-200 text-xs flex items-center space-x-2 text-emerald-900">
-                        <Milestone className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span><strong>Cột mốc hoàn thành:</strong> {phase.milestone}</span>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+            <div className="pt-1">
+              <LearningRoadmapView
+                profile={profile}
+                career={career}
+                onSelectCareer={() => {}}
+                onUpdateProfile={onUpdateProfile}
+                llmConfig={llmConfig}
+                compactMode
+              />
             </div>
           )}
 

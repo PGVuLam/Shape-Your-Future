@@ -101,7 +101,12 @@ export function createEmptyProfile(ageGroup: AgeGroup = '15-18'): UserProfile {
       pedagogyScore: undefined,
       thptCombo: '',
       thptScore: undefined,
-      awards: []
+      awards: [],
+      plannedExams: [],
+      timeUntilExam: undefined,
+      studyGoal: '',
+      weakTopics: [],
+      customExamRatio: undefined
     },
     workPreferences: {
       teamworkVsSolo: 'Balanced',
